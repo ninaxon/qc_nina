@@ -1,0 +1,24 @@
+# Railway ignore file
+.git/
+.gitignore
+README.md
+*.md
+.env.example
+.vscode/
+.idea/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+venv/
+env/
+ENV/
+logs/*.log
+*.sqlite
+*.db
+.DS_Store
+Thumbs.db
