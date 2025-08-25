@@ -41,6 +41,9 @@ class GroupUpdateScheduler:
         self.bot = bot
         self.google = google_integration
         
+        # Track startup time to prevent premature updates on restart
+        self.startup_time = time.time()
+        
         # Central rate limiter for Telegram sends
         self.telegram_semaphore = asyncio.Semaphore(config.MAX_CONCURRENT_TELEGRAM_SENDS)
         
@@ -73,9 +76,12 @@ class GroupUpdateScheduler:
             logger.error("Job queue not available - cannot start scheduler")
             return
         
-        # Schedule hourly visible updates with jitter
-        hourly_jitter = random.randint(0, self.config.SCHEDULER_JITTER_MAX_SECONDS)
-        logger.info(f"Scheduling hourly group updates with {hourly_jitter}s initial jitter")
+        # Schedule hourly visible updates with minimum startup delay to allow TMS refresh
+        # Use minimum 5 minutes (300s) startup delay to ensure TMS data is fresh before sending updates
+        min_startup_delay = 300  # 5 minutes minimum delay on restart
+        max_startup_delay = min_startup_delay + self.config.SCHEDULER_JITTER_MAX_SECONDS
+        hourly_jitter = random.randint(min_startup_delay, max_startup_delay)
+        logger.info(f"Scheduling hourly group updates with {hourly_jitter}s initial delay (min {min_startup_delay}s to allow TMS refresh)")
         
         job_queue.run_repeating(
             self._hourly_group_updates_job,
@@ -108,6 +114,13 @@ class GroupUpdateScheduler:
     async def _hourly_group_updates_job(self, context):
         """Hourly visible updates to groups with registered VINs"""
         job_id = f"hourly_updates_{int(time.time())}"
+        
+        # Additional safety check: ensure enough time has passed since startup for TMS refresh
+        time_since_startup = time.time() - self.startup_time
+        min_startup_delay = 240  # 4 minutes minimum (slightly less than scheduler delay for race condition)
+        if time_since_startup < min_startup_delay:
+            logger.warning(f"Skipping updates - only {time_since_startup:.0f}s since startup, need {min_startup_delay}s for TMS refresh")
+            return
         
         if job_id in self.running_jobs:
             logger.warning("Hourly update job already running, skipping")
@@ -286,8 +299,16 @@ class GroupUpdateScheduler:
         
         from location_renderer import render_location_update
         
+        # Look up driver name from assets sheet if not provided by TMS
+        driver_name = fleet_point.driver_name
+        if not driver_name and hasattr(self, 'google'):
+            try:
+                driver_name, _ = self.google.get_driver_contact_info_by_vin(fleet_point.vin)
+            except Exception as e:
+                logger.debug(f"Could not lookup driver name for {fleet_point.vin}: {e}")
+        
         return render_location_update(
-            driver=fleet_point.driver_name or "Unknown Driver",
+            driver=driver_name or "Unknown Driver",
             status=fleet_point.status or "Unknown",
             lat=fleet_point.lat or 0.0,
             lon=fleet_point.lon or 0.0,
@@ -311,8 +332,16 @@ class GroupUpdateScheduler:
         # Extract and format speed
         speed_mph = fleet_point.speed_mph()
         
+        # Look up driver name from assets sheet if not provided by TMS  
+        driver_name = fleet_point.driver_name
+        if not driver_name and hasattr(self, 'google'):
+            try:
+                driver_name, _ = self.google.get_driver_contact_info_by_vin(fleet_point.vin)
+            except Exception as e:
+                logger.debug(f"Could not lookup driver name for {fleet_point.vin}: {e}")
+        
         # Escape HTML in user/sheet data
-        driver_name = html.escape(fleet_point.driver_name or "Unknown Driver")
+        driver_name = html.escape(driver_name or "Unknown Driver")
         location = html.escape(fleet_point.location_str or "Location Unavailable")
         status = html.escape(fleet_point.status or "Unknown")
         
@@ -378,6 +407,10 @@ class GroupUpdateScheduler:
                         if vin:
                             vin_to_row[vin] = i + 2  # +2 for header and 1-based indexing
                 
+                # Log VIN indexing statistics
+                logger.info(f"📊 ELD_tracker scan: {len(data_rows)} total rows, {len(vin_to_row)} valid VINs indexed")
+                logger.info(f"🔍 VIN column found at index {vin_col_idx} (schema expects column E=4)")
+                
             except Exception as e:
                 logger.error(f"Error reading ELD_tracker data: {e}")
                 return 0
@@ -385,9 +418,14 @@ class GroupUpdateScheduler:
             # Prepare batch updates for F:K columns
             batch_updates = []
             updated_count = 0
+            skipped_count = 0
+            skipped_samples = []
             
             for fleet_point in fleet_points:
                 if fleet_point.vin not in vin_to_row:
+                    skipped_count += 1
+                    if len(skipped_samples) < 5:
+                        skipped_samples.append(fleet_point.vin)
                     continue  # Skip unknown VINs
                 
                 row_num = vin_to_row[fleet_point.vin]
@@ -399,14 +437,14 @@ class GroupUpdateScheduler:
                     tz_name = ny_time.strftime('%Z')
                     time_str = ny_time.strftime(f'%Y-%m-%d %H:%M:%S {tz_name}')
                 
-                # Prepare row data for F:K (columns 6-11)
+                # Prepare row data for F:K (columns 6-11) - prevent auto-merging
                 row_data = [
-                    fleet_point.location_str or "",     # F: Last Known Location
-                    fleet_point.lat or "",              # G: Latitude  
-                    fleet_point.lon or "",              # H: Longitude
-                    fleet_point.status or "",           # I: Status
-                    time_str,                           # J: Update Time
-                    fleet_point.source                  # K: Source
+                    fleet_point.location_str or " ",                    # F: Last Known Location (space prevents merging)
+                    str(fleet_point.lat) if fleet_point.lat else " ",  # G: Latitude (always string)
+                    str(fleet_point.lon) if fleet_point.lon else " ",  # H: Longitude (always string)
+                    fleet_point.status or "Unknown",                   # I: Status (explicit default)
+                    time_str or " ",                                    # J: Update Time (space prevents merging)
+                    fleet_point.source or "TMS"                        # K: Source (explicit default)
                 ]
                 
                 batch_updates.append({
@@ -428,6 +466,12 @@ class GroupUpdateScheduler:
                     except Exception as e:
                         logger.error(f"Batch update failed for chunk {i//chunk_size}: {e}")
                 
+                # Enhanced logging with diagnostic information
+                total_tms_vins = len(fleet_points)
+                matched_vins = updated_count
+                logger.info(f"📈 Update summary: {matched_vins}/{total_tms_vins} TMS VINs matched sheet")
+                logger.info(f"⚠️ Skipped {skipped_count} unknown VINs: {skipped_samples[:5]}")
+                logger.info(f"✅ Executed {len(batch_updates)} updates in {len(range(0, len(batch_updates), 50))} chunks")
                 logger.info(f"Updated {updated_count} records in ELD_tracker")
             
             return updated_count

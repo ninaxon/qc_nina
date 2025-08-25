@@ -163,7 +163,7 @@ def render_location_update(
         config = Config()
         coord_decimals = getattr(config, 'RENDER_COORD_DECIMALS', 5)
         cache_ttl = getattr(config, 'LOCATION_ADDR_CACHE_TTL_SECS', 86400)
-    except:
+    except (ImportError, AttributeError) as config_error:
         coord_decimals = 5
         cache_ttl = 86400
     

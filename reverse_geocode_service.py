@@ -109,8 +109,19 @@ class ReverseGeocodeService:
                 timeout=aiohttp.ClientTimeout(total=self.timeout)
             ) as response:
                 
+                if response.status == 403:
+                    logger.error("ORS returned 403 (DAILY QUOTA EXCEEDED) - disabling ORS for 24 hours")
+                    # Set a flag to disable ORS requests for the rest of the day
+                    self._daily_quota_exceeded = True
+                    self._quota_exceeded_time = time.time()
+                    return None
+                
                 if response.status == 429:
-                    logger.warning("ORS returned 429 (rate limited)")
+                    logger.warning("ORS returned 429 (rate limited) - implementing aggressive backoff")
+                    # Much more aggressive backoff for 429 errors
+                    backoff_delay = min(10.0 * (2.0 ** (self._request_count % 4)), 120.0)  # 10s, 20s, 40s, 80s, max 120s
+                    logger.warning(f"Backing off for {backoff_delay:.1f}s due to ORS rate limit")
+                    await asyncio.sleep(backoff_delay)
                     return None
                 
                 if response.status != 200:

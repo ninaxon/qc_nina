@@ -1,6 +1,8 @@
 # eta_service.py
 import requests
 import logging
+import time
+import pytz
 from datetime import datetime, timedelta
 from dateutil import parser as dtp
 from typing import Optional, Tuple, Dict, Any
@@ -8,17 +10,33 @@ from typing import Optional, Tuple, Dict, Any
 logger = logging.getLogger(__name__)
 
 class ETAService:
-    """ETA calculation service using OpenRouteService"""
+    """ETA calculation service using OpenRouteService with circuit breaker"""
     
     def __init__(self, ors_api_key: str):
         self.key = ors_api_key
         self.geocache = {}  # Simple geocoding cache
+        
+        # Circuit breaker for external API calls
+        self.circuit_breaker_failures = 0
+        self.circuit_breaker_threshold = 3  # Open circuit after 3 failures
+        self.circuit_breaker_timeout = 300  # 5 minutes
+        self.circuit_open_until = None
     
     def _route(self, src_lat: float, src_lon: float, dst_lat: float, dst_lon: float) -> Tuple[int, int]:
         """
         Calculate route between two points
         Returns: (miles, seconds)
         """
+        # Check circuit breaker
+        if self.circuit_open_until:
+            if time.time() < self.circuit_open_until:
+                raise Exception("Circuit breaker is open - external API temporarily unavailable")
+            else:
+                # Reset circuit breaker after timeout
+                self.circuit_open_until = None
+                self.circuit_breaker_failures = 0
+                logger.info("Circuit breaker reset - attempting to reconnect to external API")
+        
         url = "https://api.openrouteservice.org/v2/directions/driving-car"
         payload = {"coordinates": [[src_lon, src_lat], [dst_lon, dst_lat]]}
         headers = {
@@ -27,7 +45,22 @@ class ETAService:
         }
         
         try:
+            # Add aggressive delay to prevent rate limiting
+            import time
+            if hasattr(self, '_last_request_time'):
+                elapsed = time.time() - self._last_request_time
+                min_delay = 3.0  # 3 second minimum delay
+                if elapsed < min_delay:
+                    time.sleep(min_delay - elapsed)
+            
             r = requests.post(url, json=payload, headers=headers, timeout=20)
+            self._last_request_time = time.time()
+            
+            if r.status_code == 429:
+                logger.warning("ORS ETA service rate limited (429) - aggressive backoff")
+                time.sleep(15)  # 15 second backoff
+                raise Exception("Rate limited")
+                
             r.raise_for_status()
             
             feat = r.json()["routes"][0]
@@ -35,9 +68,18 @@ class ETAService:
             km = float(feat["summary"]["distance"]) / 1000.0
             miles = round(km * 0.621371)
             
+            # Success - reset circuit breaker
+            self.circuit_breaker_failures = 0
+            
             return miles, sec
         except Exception as e:
-            logger.error(f"Route calculation failed: {e}")
+            # Handle circuit breaker on failures
+            self.circuit_breaker_failures += 1
+            if self.circuit_breaker_failures >= self.circuit_breaker_threshold:
+                self.circuit_open_until = time.time() + self.circuit_breaker_timeout
+                logger.error(f"Circuit breaker opened after {self.circuit_breaker_failures} failures - API unavailable for {self.circuit_breaker_timeout}s")
+            
+            logger.error(f"❌ Route calculation failed: {e}")
             raise
     
     def geocode(self, address: str) -> Optional[Tuple[float, float]]:
@@ -56,6 +98,17 @@ class ETAService:
             logger.debug(f"Using geocode cache for: {cleaned}")
             return self.geocache[cleaned]
         
+        # Check circuit breaker
+        if self.circuit_open_until:
+            if time.time() < self.circuit_open_until:
+                logger.warning("❌ Geocoding failed: Circuit breaker is open - external API temporarily unavailable")
+                return None
+            else:
+                # Reset circuit breaker after timeout
+                self.circuit_open_until = None
+                self.circuit_breaker_failures = 0
+                logger.info("Circuit breaker reset - attempting to reconnect to external API")
+        
         # Use OpenRouteService for geocoding
         url = "https://api.openrouteservice.org/geocode/search"
         params = {
@@ -67,7 +120,23 @@ class ETAService:
         
         try:
             logger.debug(f"Geocoding address: {cleaned}")
+            
+            # Add aggressive delay to prevent rate limiting
+            import time
+            if hasattr(self, '_last_geocode_time'):
+                elapsed = time.time() - self._last_geocode_time
+                min_delay = 3.0  # 3 second minimum delay
+                if elapsed < min_delay:
+                    time.sleep(min_delay - elapsed)
+            
             r = requests.get(url, params=params, timeout=10)
+            self._last_geocode_time = time.time()
+            
+            if r.status_code == 429:
+                logger.warning("ORS geocoding rate limited (429) - aggressive backoff")
+                time.sleep(15)  # 15 second backoff
+                return None
+                
             r.raise_for_status()
             
             features = r.json().get("features", [])
@@ -82,10 +151,19 @@ class ETAService:
             self.geocache[cleaned] = result
             logger.debug(f"Geocoded '{cleaned}' to {result}")
             
+            # Success - reset circuit breaker failures
+            self.circuit_breaker_failures = 0
+            
             return result
             
         except Exception as e:
-            logger.warning(f"Geocoding failed for '{cleaned}': {e}")
+            # Handle circuit breaker on failures
+            self.circuit_breaker_failures += 1
+            if self.circuit_breaker_failures >= self.circuit_breaker_threshold:
+                self.circuit_open_until = time.time() + self.circuit_breaker_timeout
+                logger.error(f"Circuit breaker opened after {self.circuit_breaker_failures} failures - API unavailable for {self.circuit_breaker_timeout}s")
+            
+            logger.warning(f"❌ Geocoding failed for '{cleaned}': {e}")
             return None
     
     def eta_from_now(self, src_lat: float, src_lon: float, address: str) -> Optional[Dict[str, Any]]:
@@ -174,8 +252,14 @@ class ETAService:
             else:
                 duration_str = f"{minutes}m"
             
-            # Format ETA time (convert to local time as needed)
-            eta_str = eta_utc.strftime("%I:%M %p UTC") if eta_utc else "Unknown"
+            # Format ETA time (convert to NY timezone)
+            if eta_utc:
+                # Convert UTC to NY timezone
+                ny_tz = pytz.timezone('America/New_York')
+                eta_ny = eta_utc.replace(tzinfo=pytz.utc).astimezone(ny_tz)
+                eta_str = eta_ny.strftime("%I:%M %p ET")
+            else:
+                eta_str = "Unknown"
             
             result = {
                 "distance": f"{miles} miles",

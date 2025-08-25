@@ -1,0 +1,36 @@
+# =====================================================
+# ADD THESE LINES TO YOUR EXISTING .env FILE
+# =====================================================
+
+# =====================================================
+# GOOGLE SHEETS RATE LIMITING (Fixes 429 errors)
+# =====================================================
+SHEETS_RATE_LIMIT_ENABLED=true
+SHEETS_MAX_REQUESTS_PER_MINUTE=180
+SHEETS_CACHE_DEFAULT_TTL=300
+SHEETS_CACHE_LONG_TTL=1800
+
+# =====================================================
+# GOOGLE SHEETS COLUMN MAPPING (Fixes driver name mixups)
+# =====================================================
+USE_COLUMN_MAPPING=true
+
+# Assets worksheet column positions (A,B,C notation)
+ASSETS_DRIVER_NAME_COL=D    # Driver Name column
+ASSETS_VIN_COL=E           # VIN column  
+ASSETS_LOCATION_COL=F      # Last Known Location column
+ASSETS_LATITUDE_COL=G      # Latitude column
+ASSETS_LONGITUDE_COL=H     # Longitude column
+ASSETS_PHONE_COL=L         # Phone column
+
+# =====================================================
+# INSTRUCTIONS:
+# =====================================================
+# 1. Copy the lines above into your existing .env file
+# 2. Check your Google Sheet to verify column positions:
+#    - Open your assets worksheet
+#    - Check which column contains Driver Names (usually D)
+#    - Check which column contains VINs (usually E)
+#    - If different, update the values above
+# 3. Restart your application
+# =====================================================

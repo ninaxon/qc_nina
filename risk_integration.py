@@ -90,8 +90,12 @@ class RiskDetectionMixin:
             self.qc_chat_id = getattr(self.config, 'QC_TEAM_CHAT_ID', None)
             self.mgmt_chat_id = getattr(self.config, 'MGMT_CHAT_ID', None)
             self.risk_check_interval = getattr(self.config, 'RISK_CHECK_INTERVAL', 300)
+            self.assets_update_interval = getattr(self.config, 'ASSETS_UPDATE_INTERVAL', 3600)
             self.enable_risk_monitoring = getattr(self.config, 'ENABLE_RISK_MONITORING', True)
             self.enable_asset_updates = getattr(self.config, 'ENABLE_ASSET_SHEET_UPDATES', True)
+            
+            # Track last assets update to ensure hourly intervals
+            self.last_assets_update = None
             
             # ETA alerting settings
             self.send_qc_late_alerts = getattr(self.config, 'SEND_QC_LATE_ALERTS', True)
@@ -120,6 +124,7 @@ class RiskDetectionMixin:
             return
         
         try:
+            # Schedule risk monitoring job (5 minutes, no assets updates)
             context.job_queue.run_repeating(
                 callback=self._enhanced_risk_monitoring_callback,
                 interval=self.risk_check_interval,
@@ -128,8 +133,19 @@ class RiskDetectionMixin:
                 data={'type': 'enhanced_risk_monitoring'}
             )
             logger.info(f"Scheduled enhanced risk monitoring every {self.risk_check_interval}s")
+            
+            # Schedule separate assets update job (hourly)
+            context.job_queue.run_repeating(
+                callback=self._assets_update_callback,
+                interval=self.assets_update_interval,
+                first=300,  # Start after 5 minutes (avoid startup rush)
+                name="assets_location_updates",
+                data={'type': 'assets_updates'}
+            )
+            logger.info(f"Scheduled assets location updates every {self.assets_update_interval}s")
+            
         except Exception as e:
-            logger.error(f"Failed to schedule risk monitoring: {e}")
+            logger.error(f"Failed to schedule monitoring jobs: {e}")
     
     async def _enhanced_risk_monitoring_callback(self, context):
         """Enhanced periodic callback with QC Panel sync and ETA monitoring"""
@@ -154,7 +170,7 @@ class RiskDetectionMixin:
             drivers_checked = 0
             eta_alerts_sent = 0
             
-            # Update fleet_status sheet if enabled
+            # Update fleet_status sheet if enabled (lightweight, keep in risk monitoring)
             if self.enable_asset_updates and trucks:
                 try:
                     if hasattr(self.google_integration, 'update_fleet_status_sheet'):
@@ -289,6 +305,76 @@ class RiskDetectionMixin:
             
         except Exception as e:
             logger.error(f"Enhanced risk monitoring callback error: {e}")
+    
+    async def _assets_update_callback(self, context):
+        """Separate hourly callback for assets sheet location/timestamp updates"""
+        from datetime import datetime, timedelta
+        import time
+        
+        job_id = f"assets_update_{int(time.time())}"
+        
+        if job_id in getattr(self, 'running_jobs', set()):
+            logger.warning("Assets update job already running, skipping")
+            return
+        
+        if not hasattr(self, 'running_jobs'):
+            self.running_jobs = set()
+        self.running_jobs.add(job_id)
+        start_time = time.time()
+        
+        try:
+            logger.info("🔄 Starting hourly assets sheet location/timestamp updates...")
+            
+            # Check if enough time has passed since last update (prevent restart spam)
+            now = datetime.utcnow()
+            if self.last_assets_update:
+                time_since_last = (now - self.last_assets_update).total_seconds()
+                min_interval = self.assets_update_interval - 300  # Allow 5min tolerance
+                
+                if time_since_last < min_interval:
+                    logger.info(f"⏭️ Skipping assets update - only {time_since_last:.0f}s since last update (minimum: {min_interval}s)")
+                    return
+            
+            if not self.enable_asset_updates:
+                logger.info("❌ Assets updates disabled in configuration")
+                return
+                
+            # Update assets sheet with current TMS location/timestamp data
+            if hasattr(self.google_integration, 'update_assets_with_current_data'):
+                logger.info("📊 Fetching current TMS data for assets update...")
+                result = self.google_integration.update_assets_with_current_data()  # Process all trucks, no artificial limit
+                logger.debug(f"Assets update result: {result}")
+                
+                if "error" not in result:
+                    assets_updated = result.get('assets_updated', 0)
+                    field_updates = result.get('field_updates_made', 0)
+                    trucks_processed = result.get('trucks_processed', 0)
+                    new_trucks = result.get('new_trucks_found', 0)
+                    
+                    if assets_updated > 0:
+                        logger.info(f"✅ Updated {assets_updated}/{trucks_processed} assets with {field_updates} field updates from TMS")
+                        if new_trucks > 0:
+                            logger.info(f"📋 Found {new_trucks} new trucks in TMS not in assets sheet")
+                    else:
+                        logger.info("ℹ️ No asset location updates needed - all data current")
+                    
+                    # Update timestamp of successful update
+                    self.last_assets_update = now
+                    
+                else:
+                    logger.error(f"❌ Assets location update failed: {result['error']}")
+                    
+            else:
+                logger.error("❌ Method update_assets_with_current_data not found on google_integration")
+            
+            duration = time.time() - start_time
+            logger.info(f"⏱️ Assets update completed in {duration:.1f}s")
+            
+        except Exception as e:
+            logger.error(f"Assets update callback error: {e}", exc_info=True)
+        finally:
+            if hasattr(self, 'running_jobs'):
+                self.running_jobs.discard(job_id)
     
     def _mute_key(self, key: str, hours: int = 6):
         """Mute alert key for specified hours"""
@@ -622,7 +708,8 @@ class RiskDetectionMixin:
                 f"• Monitoring: {'✅ Enabled' if getattr(self, 'enable_risk_monitoring', False) else '❌ Disabled'}\n"
                 f"• QC Chat: {'✅ Configured' if getattr(self, 'qc_chat_id', None) else '❌ Not set'}\n"
                 f"• MGMT Chat: {'✅ Configured' if getattr(self, 'mgmt_chat_id', None) else '❌ Not set'}\n"
-                f"• Check interval: {getattr(self, 'risk_check_interval', 300)//60} minutes"
+                f"• Risk check interval: {getattr(self, 'risk_check_interval', 300)//60} minutes\n"
+                f"• Assets update interval: {getattr(self, 'assets_update_interval', 3600)//60} minutes"
             )
             
             keyboard = [

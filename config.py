@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from pathlib import Path
 
 # Try to load dotenv, but make it optional
@@ -44,8 +44,43 @@ class Config:
         # =====================================================
         self.QC_PANEL_SPREADSHEET_ID = self._get_optional("QC_PANEL_SPREADSHEET_ID", "")
         self.QC_ACTIVE_TABS = self._get_optional("QC_ACTIVE_TABS", "BIDH S,BIDH D,CPWP S,CPWP D,SSOY,OTMV")
-        self.RISK_MONITOR_DEL_STATUSES = self._get_optional("RISK_MONITOR_DEL_STATUSES", "TRANSIT,WILL BE LATE,RISKY")
+        self.RISK_MONITOR_DEL_STATUSES = self._get_optional("RISK_MONITOR_DEL_STATUSES", "IN TRANSIT,WILL BE LATE,AT SHIPPER")
+
+        # =====================================================
+        # RATE LIMITING CONFIGURATION
+        # =====================================================
+        self.SHEETS_RATE_LIMIT_ENABLED = self._get_optional_bool("SHEETS_RATE_LIMIT_ENABLED", True)
+        self.SHEETS_MAX_REQUESTS_PER_MINUTE = self._get_optional_int("SHEETS_MAX_REQUESTS_PER_MINUTE", 180)
+        self.SHEETS_CACHE_DEFAULT_TTL = self._get_optional_int("SHEETS_CACHE_DEFAULT_TTL", 300)  # 5 minutes
+        self.SHEETS_CACHE_LONG_TTL = self._get_optional_int("SHEETS_CACHE_LONG_TTL", 1800)  # 30 minutes
+        self.SHEETS_EXPONENTIAL_BACKOFF_BASE = self._get_optional_float("SHEETS_EXPONENTIAL_BACKOFF_BASE", 1.0)
+        self.SHEETS_EXPONENTIAL_BACKOFF_MAX = self._get_optional_float("SHEETS_EXPONENTIAL_BACKOFF_MAX", 60.0)
+        self.SHEETS_CIRCUIT_BREAKER_THRESHOLD = self._get_optional_int("SHEETS_CIRCUIT_BREAKER_THRESHOLD", 10)
+        self.SHEETS_CIRCUIT_BREAKER_TIMEOUT = self._get_optional_int("SHEETS_CIRCUIT_BREAKER_TIMEOUT", 300)  # 5 minutes
         
+        # =====================================================
+        # GOOGLE SHEETS COLUMN MAPPING (A,B,C notation)
+        # =====================================================
+        self.USE_COLUMN_MAPPING = self._get_optional_bool("USE_COLUMN_MAPPING", True)
+        
+        # Assets worksheet columns - customize if your sheet has different layout
+        self.ASSETS_DRIVER_NAME_COL = self._get_optional("ASSETS_DRIVER_NAME_COL", "D")  # Column D
+        self.ASSETS_VIN_COL = self._get_optional("ASSETS_VIN_COL", "E")  # Column E
+        self.ASSETS_LOCATION_COL = self._get_optional("ASSETS_LOCATION_COL", "F")  # Column F
+        self.ASSETS_LATITUDE_COL = self._get_optional("ASSETS_LATITUDE_COL", "G")  # Column G
+        self.ASSETS_LONGITUDE_COL = self._get_optional("ASSETS_LONGITUDE_COL", "H")  # Column H
+        self.ASSETS_PHONE_COL = self._get_optional("ASSETS_PHONE_COL", "L")  # Column L
+
+        # =====================================================
+        # OPENROUTESERVICE RATE LIMITING
+        # =====================================================
+        # OpenRouteService actual limits: Directions=40/min, Geocoding=100/min, Reverse=100/min
+        # Using conservative limits to avoid hitting quotas
+        self.ORS_MAX_REQUESTS_PER_MINUTE = self._get_optional_int("ORS_MAX_REQUESTS_PER_MINUTE", 30)  # Conservative for mixed endpoints
+        self.ORS_REQUEST_DELAY = self._get_optional_float("ORS_REQUEST_DELAY", 2.0)  # 2 second minimum delay between requests
+        self.ORS_ENABLE_CACHING = self._get_optional_bool("ORS_ENABLE_CACHING", True)
+        self.ORS_CACHE_TTL = self._get_optional_int("ORS_CACHE_TTL", 3600)  # 1 hour cache
+
         # ETA / Alerting Configuration
         self.ETA_GRACE_MINUTES = self._get_optional_int("ETA_GRACE_MINUTES", 10)
         self.SEND_QC_LATE_ALERTS = self._get_optional_bool("SEND_QC_LATE_ALERTS", True)
@@ -59,8 +94,8 @@ class Config:
         # Group Location Messages (Hourly - Sends actual messages to groups)
         self.GROUP_LOCATION_INTERVAL = self._get_optional_int("GROUP_LOCATION_INTERVAL", 3600)  # 1 hour
         
-        # Silent Data Refresh (5-minute - Updates data silently for accuracy)
-        self.LIVE_TRACKING_INTERVAL = self._get_optional_int("LIVE_TRACKING_INTERVAL", 300)  # 5 minutes
+        # Silent Data Refresh (8-minute - Updates TMS data to assets sheet)  
+        self.LIVE_TRACKING_INTERVAL = self._get_optional_int("LIVE_TRACKING_INTERVAL", 480)  # 8 minutes
         
         # Legacy support (maps to LIVE_TRACKING_INTERVAL for backward compatibility)
         self.LIVE_UPDATE_INTERVAL = self.LIVE_TRACKING_INTERVAL
@@ -82,6 +117,7 @@ class Config:
         # Risk Detection Configuration
         self.ENABLE_RISK_MONITORING = self._get_optional_bool("ENABLE_RISK_MONITORING", True)
         self.RISK_CHECK_INTERVAL = self._get_optional_int("RISK_CHECK_INTERVAL", 300)  # 5 minutes
+        self.ASSETS_UPDATE_INTERVAL = self._get_optional_int("ASSETS_UPDATE_INTERVAL", 3600)  # 1 hour
         self.QC_TEAM_CHAT_ID = self._get_optional_int("QC_TEAM_CHAT_ID")
         self.MANAGEMENT_CHAT_ID = self._get_optional_int("MANAGEMENT_CHAT_ID")
         
@@ -445,6 +481,7 @@ class Config:
             "live_eta": self.LIVE_TRACKING_INTERVAL,
             "live_tracking": self.LIVE_TRACKING_INTERVAL,  # Legacy support
             "risk_check": self.RISK_CHECK_INTERVAL,
+            "assets_update": self.ASSETS_UPDATE_INTERVAL,
             "default": self.LIVE_TRACKING_INTERVAL
         }
         return intervals.get(mode, intervals["default"])
@@ -490,6 +527,7 @@ class Config:
             f"Config(group_location={self.GROUP_LOCATION_INTERVAL}s, "
             f"live_eta={self.LIVE_TRACKING_INTERVAL}s, "
             f"risk_check={self.RISK_CHECK_INTERVAL}s, "
+            f"assets_update={self.ASSETS_UPDATE_INTERVAL}s, "
             f"qc_panel={bool(self.QC_PANEL_SPREADSHEET_ID)}, "
             f"max_sessions={self.MAX_LIVE_SESSIONS}, "
             f"auto_start={self.AUTO_START_LOCATION_UPDATES})"

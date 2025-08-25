@@ -6,7 +6,8 @@ pytz==2023.3
 python-dotenv==1.0.0
 shapely==2.0.2
 aiohttp==3.9.1
-python-dateutil==2.8.2
+python-dateutil>=2.9
+rapidfuzz>=3.6
 
 # Optional admin tools (install with: pip install psutil rich)
 # psutil==5.9.5

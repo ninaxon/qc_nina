@@ -300,7 +300,7 @@ def test_telegram_integration_safe(config: Config) -> bool:
                 print(f"❌ Telegram API error: {e}")
                 try:
                     await app.shutdown()
-                except:
+                except Exception as shutdown_error:
                     pass
                 return False
         
@@ -884,6 +884,7 @@ def main():
         logger.info(f"Jitter range: 0-15s (distribution for 300+ groups)")
         
         # Handle CLI arguments
+        run_tests_flag = True
         if len(sys.argv) > 1:
             if sys.argv[1] == "--test":
                 logger.info("Running enhanced integration tests")
@@ -891,17 +892,22 @@ def main():
                     sys.exit(0)
                 else:
                     sys.exit(1)
+            elif sys.argv[1] == "--no-tests":
+                run_tests_flag = False
+                print("⚡ Skipping connectivity tests - starting bot directly...")
+                logger.info("Skipping connectivity tests - starting bot directly")
         
-        # Run enhanced connectivity tests
-        print("Running enhanced connectivity tests...")
-        logger.info("Starting enhanced connectivity tests...")
-        
-        tests_passed = run_tests(config)
-        if not tests_passed:
-            print("⚠️  Some tests failed, but continuing...")
-            logger.warning("Some enhanced tests failed")
-        else:
-            logger.info("All enhanced tests passed")
+        # Run enhanced connectivity tests (unless skipped)
+        if run_tests_flag:
+            print("Running enhanced connectivity tests...")
+            logger.info("Starting enhanced connectivity tests...")
+            
+            tests_passed = run_tests(config)
+            if not tests_passed:
+                print("⚠️  Some tests failed, but continuing...")
+                logger.warning("Some enhanced tests failed")
+            else:
+                logger.info("All enhanced tests passed")
         
         # Start enhanced bot
         print("Initializing enhanced bot for production scale...")

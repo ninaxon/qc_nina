@@ -212,7 +212,7 @@ class SheetsModelManager:
     # ASSETS WORKSHEET (VIN ↔ driver mapping, nightly sync)
     # =====================================================
     
-    async def upsert_assets_from_tms(self, tms_assets: Iterable[dict]) -> int:
+    async def upsert_assets_from_tms(self, tms_assets: Iterable[dict], allow_new_trucks: bool = False) -> int:
         """Nightly sync: upsert by VIN, protect human-maintained fields"""
         try:
             worksheet = self._get_worksheet_safe('assets')
@@ -305,27 +305,33 @@ class SheetsModelManager:
                     
                     upserted_count += 1
                 else:
-                    # New VIN - append row
-                    new_row = [''] * len(headers)
-                    
-                    # Fill in the data we have
-                    if self._find_header_column(header_map, 'UNIT') is not None:
-                        new_row[self._find_header_column(header_map, 'UNIT')] = unit
-                    if self._find_header_column(header_map, 'VIN') is not None:
-                        new_row[self._find_header_column(header_map, 'VIN')] = vin
-                    if self._find_header_column(header_map, 'Driver Name') is not None and driver_name:
-                        new_row[self._find_header_column(header_map, 'Driver Name')] = driver_name
-                    if self._find_header_column(header_map, 'Status') is not None:
-                        new_row[self._find_header_column(header_map, 'Status')] = status
-                    if self._find_header_column(header_map, 'First Seen UTC') is not None:
-                        new_row[self._find_header_column(header_map, 'First Seen UTC')] = current_time_utc.isoformat()
-                    if self._find_header_column(header_map, 'Last Seen UTC') is not None:
-                        new_row[self._find_header_column(header_map, 'Last Seen UTC')] = current_time_utc.isoformat()
-                    if self._find_header_column(header_map, 'Last Sync Source') is not None:
-                        new_row[self._find_header_column(header_map, 'Last Sync Source')] = source
-                    
-                    new_rows.append(new_row)
-                    upserted_count += 1
+                    # New VIN found - check if we should add it
+                    if allow_new_trucks:
+                        # New VIN - append row (only if explicitly allowed)
+                        new_row = [''] * len(headers)
+                        
+                        # Fill in the data we have
+                        if self._find_header_column(header_map, 'UNIT') is not None:
+                            new_row[self._find_header_column(header_map, 'UNIT')] = unit
+                        if self._find_header_column(header_map, 'VIN') is not None:
+                            new_row[self._find_header_column(header_map, 'VIN')] = vin
+                        if self._find_header_column(header_map, 'Driver Name') is not None and driver_name:
+                            new_row[self._find_header_column(header_map, 'Driver Name')] = driver_name
+                        if self._find_header_column(header_map, 'Status') is not None:
+                            new_row[self._find_header_column(header_map, 'Status')] = status
+                        if self._find_header_column(header_map, 'First Seen UTC') is not None:
+                            new_row[self._find_header_column(header_map, 'First Seen UTC')] = current_time_utc.isoformat()
+                        if self._find_header_column(header_map, 'Last Seen UTC') is not None:
+                            new_row[self._find_header_column(header_map, 'Last Seen UTC')] = current_time_utc.isoformat()
+                        if self._find_header_column(header_map, 'Last Sync Source') is not None:
+                            new_row[self._find_header_column(header_map, 'Last Sync Source')] = source
+                        
+                        new_rows.append(new_row)
+                        upserted_count += 1
+                        logger.info(f"Will add new truck: {vin} (auto-addition enabled)")
+                    else:
+                        # Skip new VIN (safety mode)
+                        logger.debug(f"Skipped new truck: {vin} (auto-addition disabled for safety)")
             
             # Execute batch updates
             if batch_updates:
