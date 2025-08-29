@@ -290,8 +290,12 @@ class GoogleSheetsIntegration:
 
     @staticmethod
     def _norm_driver(s):
-        """Normalize driver name"""
-        return str(s or "").strip().lower()
+        """Normalize driver name so that variations like 'John Doe / Jane' are handled consistently"""
+        if s is None:
+            return ""
+        # Take text before any '/' or ',' delimiters, common in dual-driver entries
+        name = str(s).split("/")[0].split(",")[0]
+        return name.strip().lower()
 
     def _get_groups_records_safe(self):
         """
