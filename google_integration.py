@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # Import column mapping utilities
 try:
-    from sheets_column_mapper import SheetsColumnMapper, AssetsColumnMapper
+    from sheets_column_mapper import SheetsColumnMapper, AssetsColumnMapper, QcPanelColumnMapper
     from column_mapping_config import WorksheetType, initialize_column_mapper
     COLUMN_MAPPING_AVAILABLE = True
 except ImportError:
@@ -68,11 +68,13 @@ class GoogleSheetsIntegration:
         # Column mapping - enabled for robust column access
         self.use_column_mapping = COLUMN_MAPPING_AVAILABLE and getattr(config, 'USE_COLUMN_MAPPING', True)
         self.assets_mapper = None
+        self.qc_panel_mapper = None
         
         if self.use_column_mapping and COLUMN_MAPPING_AVAILABLE:
             try:
                 initialize_column_mapper(config)
                 self.assets_mapper = AssetsColumnMapper(config=config)
+                self.qc_panel_mapper = QcPanelColumnMapper(config=config)
                 logger.info("Column mapping enabled for robust column access")
                 logger.info(f"Assets columns: Driver={config.ASSETS_DRIVER_NAME_COL}, VIN={config.ASSETS_VIN_COL}")
             except Exception as e:
@@ -433,28 +435,66 @@ class GoogleSheetsIntegration:
                             logger.error(f"Error getting QC Panel records from tab '{tab}': {e}")
                             continue
 
-                    for r in rows:
-                        vin     = self._norm_vin(r.get("VIN", ""))
-                        driver  = self._norm_driver(r.get("DRIVER", ""))
-                        del_sts = self._norm(r.get("STS OF DEL", "")).upper()
-
-                        if del_sts not in watch:
+                    # Process rows using column mapping if available
+                    if self.use_column_mapping and self.qc_panel_mapper:
+                        # Use column mapping for robust data access
+                        all_data = ws.get_all_values()
+                        if len(all_data) < 2:
                             continue
+                        
+                        data_rows = all_data[1:]  # Skip header row
+                        for row in data_rows:
+                            try:
+                                load_info = self.qc_panel_mapper.get_load_info(row)
+                                
+                                vin = self._norm_vin(load_info.get("vin", ""))
+                                driver = self._norm_driver(load_info.get("driver", ""))
+                                del_sts = self._norm(load_info.get("del_status", "")).upper()
 
-                        payload = {
-                            "driver_name": self._norm(r.get("DRIVER", "")),
-                            "load_id":     self._norm(r.get("#", "")),                 # D
-                            "pu_address":  self._norm(r.get("PU ADDRESS", "")),        # U
-                            "pu_appt":     self._norm(r.get("PU APT", "")),            # T
-                            "del_address": self._norm(r.get("DEL ADDRESS", "")),       # W
-                            "del_appt":    self._norm(r.get("DEL APT", "")),           # V
-                            "pu_status":   self._norm(r.get("STS OF PU", "")),         # R
-                            "del_status":  del_sts,                                     # S
-                            "in_transit":  True,
-                            "is_late":     del_sts == "WILL BE LATE",
-                        }
-                        if vin:    out[vin]    = payload
-                        if driver: out[driver] = payload
+                                if del_sts not in watch:
+                                    continue
+
+                                payload = {
+                                    "driver_name": self._norm(load_info.get("driver", "")),
+                                    "load_id": self._norm(load_info.get("load_id", "")),
+                                    "pu_address": self._norm(load_info.get("pu_address", "")),
+                                    "pu_appt": self._norm(load_info.get("pu_appt", "")),
+                                    "del_address": self._norm(load_info.get("del_address", "")),
+                                    "del_appt": self._norm(load_info.get("del_appt", "")),
+                                    "pu_status": self._norm(load_info.get("pu_status", "")),
+                                    "del_status": del_sts,
+                                    "in_transit": True,
+                                    "is_late": del_sts == "WILL BE LATE",
+                                }
+                                if vin: out[vin] = payload
+                                if driver: out[driver] = payload
+                            except Exception as row_e:
+                                logger.debug(f"Error processing QC Panel row in tab '{tab}': {row_e}")
+                                continue
+                    else:
+                        # Fallback to header-based processing
+                        for r in rows:
+                            vin     = self._norm_vin(r.get("VIN", ""))
+                            driver  = self._norm_driver(r.get("DRIVER", ""))
+                            del_sts = self._norm(r.get("STS OF DEL", "")).upper()
+
+                            if del_sts not in watch:
+                                continue
+
+                            payload = {
+                                "driver_name": self._norm(r.get("DRIVER", "")),
+                                "load_id":     self._norm(r.get("#", "")),                 # D
+                                "pu_address":  self._norm(r.get("PU ADDRESS", "")),        # U
+                                "pu_appt":     self._norm(r.get("PU APT", "")),            # T
+                                "del_address": self._norm(r.get("DEL ADDRESS", "")),       # W
+                                "del_appt":    self._norm(r.get("DEL APT", "")),           # V
+                                "pu_status":   self._norm(r.get("STS OF PU", "")),         # R
+                                "del_status":  del_sts,                                     # S
+                                "in_transit":  True,
+                                "is_late":     del_sts == "WILL BE LATE",
+                            }
+                            if vin:    out[vin]    = payload
+                            if driver: out[driver] = payload
                 except Exception as e:
                     logger.error(f"Error processing QC Panel tab '{tab}': {e}")
                     continue
@@ -1681,10 +1721,13 @@ def test_google_integration(config: Config) -> bool:
 
             # Test worksheet structure
             debug_info = google_integration.debug_worksheet_columns()
-            if 'Driver Name' in debug_info.get('available_fields', []):
-                print(f"✅ 'Driver Name' column found in worksheet")
+            # Check for both possible field name formats
+            driver_name_found = ('Driver Name' in debug_info.get('available_fields', []) or 
+                               'driver_name' in debug_info.get('available_fields', []))
+            if driver_name_found:
+                print(f"✅ Driver name column found in worksheet")
             else:
-                print(f"❌ 'Driver Name' column not found. Available fields: {debug_info.get('available_fields', [])}")
+                print(f"❌ Driver name column not found. Available fields: {debug_info.get('available_fields', [])}")
 
             print("✅ Google Sheets integration test completed successfully")
             return True

@@ -297,18 +297,50 @@ class FleetStatusColumnMapper(SheetsColumnMapper):
         }
 
 
+class QcPanelColumnMapper(SheetsColumnMapper):
+    """Specialized column mapper for QC panel worksheet"""
+    
+    def __init__(self, worksheet_type=None, config=None):
+        worksheet_type = worksheet_type or WorksheetType.QC_PANEL
+        super().__init__(worksheet_type, config)
+    
+    def get_load_info(self, row: List[Any]) -> Dict[str, Any]:
+        """Get load information from QC panel row"""
+        return {
+            'driver': self.get_value_by_field(row, 'driver'),
+            'vin': self.get_value_by_field(row, 'vin'),
+            'unit': self.get_value_by_field(row, 'unit'),
+            'load_id': self.get_value_by_field(row, 'load_id'),
+            'pu_status': self.get_value_by_field(row, 'pu_status'),
+            'del_status': self.get_value_by_field(row, 'del_status'),
+            'pu_appt': self.get_value_by_field(row, 'pu_appt'),
+            'pu_address': self.get_value_by_field(row, 'pu_address'),
+            'del_appt': self.get_value_by_field(row, 'del_appt'),
+            'del_address': self.get_value_by_field(row, 'del_address')
+        }
+    
+    def is_active_load(self, row: List[Any], monitored_statuses: set) -> bool:
+        """Check if this row represents an active load based on delivery status"""
+        del_status = self.get_value_by_field(row, 'del_status')
+        if not del_status:
+            return False
+        return str(del_status).strip().upper() in monitored_statuses
+
+
 # Convenience instances (will be initialized with config when needed)
 assets_mapper = None
 groups_mapper = None
 fleet_status_mapper = None
+qc_panel_mapper = None
 
 def initialize_mappers(config=None):
     """Initialize convenience mapper instances with config"""
-    global assets_mapper, groups_mapper, fleet_status_mapper
+    global assets_mapper, groups_mapper, fleet_status_mapper, qc_panel_mapper
     assets_mapper = AssetsColumnMapper(config=config)
     groups_mapper = GroupsColumnMapper(config=config)
     fleet_status_mapper = FleetStatusColumnMapper(config=config)
-    return assets_mapper, groups_mapper, fleet_status_mapper
+    qc_panel_mapper = QcPanelColumnMapper(config=config)
+    return assets_mapper, groups_mapper, fleet_status_mapper, qc_panel_mapper
 
 # Utility functions
 def get_assets_driver_name(row: List[Any]) -> Optional[str]:
@@ -332,5 +364,6 @@ def debug_column_mappings() -> Dict[str, Any]:
     return {
         'assets': assets_mapper.debug_info(),
         'groups': groups_mapper.debug_info(),
-        'fleet_status': fleet_status_mapper.debug_info()
+        'fleet_status': fleet_status_mapper.debug_info(),
+        'qc_panel': qc_panel_mapper.debug_info() if qc_panel_mapper else None
     }
