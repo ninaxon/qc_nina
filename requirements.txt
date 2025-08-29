@@ -8,6 +8,7 @@ shapely==2.0.2
 aiohttp==3.9.1
 python-dateutil>=2.9
 rapidfuzz>=3.6
+certifi>=2023.7.22
 
 # Optional admin tools (install with: pip install psutil rich)
 # psutil==5.9.5

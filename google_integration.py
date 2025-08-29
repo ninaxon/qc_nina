@@ -693,7 +693,7 @@ class GoogleSheetsIntegration:
                     driver_name = record.get('driver_name', '')
                 else:
                     # Fallback to header-based access
-                    driver_name = record.get('Driver Name', '')
+                    driver_name = record.get('driver_name', '')
                 
                 driver_name = str(driver_name).strip()
 
@@ -793,29 +793,47 @@ class GoogleSheetsIntegration:
             return []
 
     def get_driver_contact_info_by_vin(self, vin: str) -> Tuple[Optional[str], Optional[str]]:
-        """Get driver name and phone by VIN - FIXED to return proper driver name from Driver Name column"""
+        """Get driver name and phone by VIN - HARDCODED column indices for reliability"""
         try:
-            records = self._get_assets_records_safe()
+            # HARDCODED COLUMN INDICES (to prevent future confusion):
+            # Column 4 (index 3): Driver Name
+            # Column 5 (index 4): VIN  
+            # Column 12 (index 11): Phone
+            DRIVER_NAME_COL = 3
+            VIN_COL = 4
+            PHONE_COL = 11
+            
+            # Get raw data directly from worksheet
+            assets_worksheet = self.assets_worksheet
+            all_data = assets_worksheet.get_all_values()
+            
+            if len(all_data) < 2:
+                return None, None
+                
             vin_upper = vin.upper().strip()
-
-            for record in records:
-                record_vin = str(record.get('VIN', '')).upper().strip()
-                if record_vin == vin_upper:
-                    # Get driver name from Driver Name column
-                    driver_name = str(record.get('Driver Name', '')).strip()
-
-                    # Handle multiple driver names (data quality fix)
-                    if driver_name and ' / ' in driver_name:
-                        # Take the first driver name when multiple names are present
-                        driver_name = driver_name.split(' / ')[0].strip()
-                        logger.debug(f"Multiple drivers found for VIN {vin}, using first: '{driver_name}'")
-
-                    # Get phone number from Phone column
-                    phone = str(record.get('Phone', '')).strip()
-
-                    logger.debug(f"Contact info for VIN {vin}: Driver: '{driver_name}', Phone: '{phone}'")
-                    return driver_name if driver_name else None, phone if phone else None
-
+            
+            # Skip header row, search data rows
+            for row_data in all_data[1:]:
+                if len(row_data) > max(DRIVER_NAME_COL, VIN_COL, PHONE_COL):
+                    # Check VIN match using hardcoded column index
+                    row_vin = str(row_data[VIN_COL]).upper().strip() if len(row_data) > VIN_COL else ''
+                    
+                    if row_vin == vin_upper:
+                        # Get driver name using hardcoded column index
+                        driver_name = str(row_data[DRIVER_NAME_COL]).strip() if len(row_data) > DRIVER_NAME_COL else ''
+                        
+                        # Handle multiple driver names (data quality fix)
+                        if driver_name and ' / ' in driver_name:
+                            # Take the first driver name when multiple names are present
+                            driver_name = driver_name.split(' / ')[0].strip()
+                            logger.debug(f"Multiple drivers found for VIN {vin}, using first: '{driver_name}'")
+                        
+                        # Get phone using hardcoded column index
+                        phone = str(row_data[PHONE_COL]).strip() if len(row_data) > PHONE_COL else ''
+                        
+                        logger.debug(f"Contact info for VIN {vin}: Driver: '{driver_name}', Phone: '{phone}'")
+                        return driver_name if driver_name else None, phone if phone else None
+            
             logger.debug(f"No contact info found for VIN: {vin}")
             return None, None
 
@@ -824,26 +842,42 @@ class GoogleSheetsIntegration:
             return None, None
 
     def get_driver_name_by_vin(self, vin: str) -> Optional[str]:
-        """Get driver name by VIN - FIXED to return proper driver name from Driver Name column"""
+        """Get driver name by VIN - HARDCODED column indices for reliability"""
         try:
-            records = self._get_assets_records_safe()
+            # HARDCODED COLUMN INDICES (to prevent future confusion):
+            # Column 4 (index 3): Driver Name
+            # Column 5 (index 4): VIN
+            DRIVER_NAME_COL = 3
+            VIN_COL = 4
+            
+            # Get raw data directly from worksheet
+            assets_worksheet = self.assets_worksheet
+            all_data = assets_worksheet.get_all_values()
+            
+            if len(all_data) < 2:
+                return None
+                
             vin_upper = vin.upper().strip()
-
-            for record in records:
-                record_vin = str(record.get('VIN', '')).upper().strip()
-                if record_vin == vin_upper:
-                    # Get driver name from Driver Name column
-                    driver_name = str(record.get('Driver Name', '')).strip()
-
-                    # Handle multiple driver names (data quality fix)
-                    if driver_name and ' / ' in driver_name:
-                        # Take the first driver name when multiple names are present
-                        driver_name = driver_name.split(' / ')[0].strip()
-                        logger.debug(f"Multiple drivers found for VIN {vin}, using first: '{driver_name}'")
-
-                    if driver_name:
-                        logger.debug(f"Driver name for VIN {vin}: '{driver_name}'")
-                        return driver_name
+            
+            # Skip header row, search data rows
+            for row_data in all_data[1:]:
+                if len(row_data) > max(DRIVER_NAME_COL, VIN_COL):
+                    # Check VIN match using hardcoded column index
+                    row_vin = str(row_data[VIN_COL]).upper().strip() if len(row_data) > VIN_COL else ''
+                    
+                    if row_vin == vin_upper:
+                        # Get driver name using hardcoded column index
+                        driver_name = str(row_data[DRIVER_NAME_COL]).strip() if len(row_data) > DRIVER_NAME_COL else ''
+                        
+                        # Handle multiple driver names (data quality fix)
+                        if driver_name and ' / ' in driver_name:
+                            # Take the first driver name when multiple names are present
+                            driver_name = driver_name.split(' / ')[0].strip()
+                            logger.debug(f"Multiple drivers found for VIN {vin}, using first: '{driver_name}'")
+                        
+                        if driver_name:
+                            logger.debug(f"Driver name for VIN {vin}: '{driver_name}'")
+                            return driver_name
 
             logger.debug(f"No driver name found for VIN: {vin}")
             return None
@@ -860,12 +894,12 @@ class GoogleSheetsIntegration:
 
             for record in records:
                 # Search in Driver Name column
-                sheet_driver_name = str(record.get('Driver Name', '')).lower().strip()
+                sheet_driver_name = str(record.get('driver_name', '')).lower().strip()
 
                 if sheet_driver_name == driver_name_lower:
                     # Return the actual driver name (with proper casing) and phone
-                    actual_name = str(record.get('Driver Name', '')).strip()
-                    phone = str(record.get('Phone', '')).strip()
+                    actual_name = str(record.get('driver_name', '')).strip()
+                    phone = str(record.get('phone', '')).strip()
 
                     logger.info(f"Contact info for driver '{driver_name}': Phone: '{phone}'")
                     return actual_name, phone if phone else None
@@ -1477,7 +1511,7 @@ class GoogleSheetsIntegration:
             # Check if truck already exists in assets
             existing_records = self._get_assets_records_safe()
             for record in existing_records:
-                existing_vin = str(record.get('VIN', '')).strip().upper()
+                existing_vin = str(record.get('vin', '')).strip().upper()
                 if existing_vin == vin_upper:
                     return {"error": f"Truck with VIN {vin_upper} already exists in assets worksheet"}
 
@@ -1557,7 +1591,7 @@ class GoogleSheetsIntegration:
             existing_vins = set()
 
             for record in existing_records:
-                vin = str(record.get('VIN', '')).strip().upper()
+                vin = str(record.get('vin', '')).strip().upper()
                 if vin:
                     existing_vins.add(vin)
 

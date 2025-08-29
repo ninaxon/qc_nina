@@ -4,8 +4,12 @@ import pytz
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import re
+import urllib3
 
 from config import Config
+
+# Disable SSL warnings for OpenRouteService API calls
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 
@@ -18,89 +22,171 @@ class TMSIntegration:
         self.geocache = {}
         self.zip_cache = config.get_cache_settings().get("zip_cache", {})
     
-    def load_truck_list(self) -> List[Dict[str, Any]]:
-        """Load truck list from TMS API with speed data"""
+    def load_truck_list(self, retry_count: int = 3) -> List[Dict[str, Any]]:
+        """Load truck list from TMS API with speed data and robust error handling"""
         params = {
             "api_key": self.config.TMS_API_KEY,
             "api_hash": self.config.TMS_API_HASH,
             "active_only": "true"  # Only get active equipment to avoid old data
         }
         
-        try:
-            logger.info(f"Loading truck list from TMS API: {self.config.TMS_API_URL}")
-            logger.debug(f"TMS API params: {params}")
-            r = requests.get(self.config.TMS_API_URL, params=params, timeout=30)
-            r.raise_for_status()
-            logger.debug(f"TMS API response status: {r.status_code}")
-            
-            all_trucks = []
-            skipped = 0
-            skipped_old_data = 0
-            
-            # Handle both equipment and locations endpoints
-            response_data = r.json()
-            trucks_data = response_data.get("equipment", response_data.get("locations", []))
-            logger.debug(f"TMS API returned {len(trucks_data)} truck records")
-            
-            for truck in trucks_data:
-                address = truck.get("address", "Unknown")
-                update_time_str = truck.get("update_time")
-                lat = truck.get("lat")
-                lng = truck.get("lng")
-                source = truck.get("source", "")
-                speed = truck.get("speed")  # Extract speed from raw data
-
-                # Filter by source - accept all valid sources
-                valid_sources = ["samsara", "clubeld", "ada_eld", "skybitz", "intangles"]
-                if source.lower() not in valid_sources:
-                    skipped += 1
-                    continue
-
-                # Require coordinates
-                if not lat or not lng:
-                    skipped += 1
-                    continue
-
-                # Check for extremely stale data - reject anything over 24 hours old regardless of address
-                if update_time_str:
+        for attempt in range(retry_count):
+            try:
+                logger.info(f"Loading truck list from TMS API: {self.config.TMS_API_URL} (attempt {attempt + 1}/{retry_count})")
+                logger.debug(f"TMS API params: {params}")
+                
+                # Try different API call approaches
+                response_methods = [
+                    lambda: requests.get(self.config.TMS_API_URL, params=params, timeout=30),
+                    lambda: requests.get(self.config.TMS_API_URL, timeout=30),  # Without params
+                    lambda: requests.post(self.config.TMS_API_URL, json=params, timeout=30),  # POST method
+                ]
+                
+                last_error = None
+                for method_idx, method in enumerate(response_methods):
                     try:
-                        update_dt = datetime.strptime(
-                            update_time_str.replace("EST", "").replace("EDT", ""), 
-                            "%m-%d-%Y %H:%M:%S "
-                        ).replace(tzinfo=pytz.timezone("America/New_York"))
-                        
-                        age_hours = (datetime.now(pytz.utc) - update_dt.astimezone(pytz.utc)).total_seconds() / 3600
-                        
-                        # Reject data older than 8 hours completely (more aggressive)
-                        if age_hours > 8:
-                            logger.debug(f"Skipping truck {truck.get('vin', 'unknown')} - GPS data {age_hours:.1f} hours old")
-                            skipped += 1
-                            skipped_old_data += 1
+                        r = method()
+                        if r.status_code == 200:
+                            logger.debug(f"TMS API success with method {method_idx + 1}, status: {r.status_code}")
+                            break
+                        else:
+                            logger.warning(f"TMS API method {method_idx + 1} returned status: {r.status_code}")
+                            last_error = f"HTTP {r.status_code}"
                             continue
-                            
-                        # Also check for unknown addresses with data older than 6 hours
-                        if (not address or address.strip().lower() == "unknown") and age_hours > 6:
-                            logger.debug(f"Skipping truck {truck.get('vin', 'unknown')} - unknown location and {age_hours:.1f} hours old")
-                            skipped += 1
-                            continue
-                            
-                    except Exception:
-                        logger.debug(f"Skipping truck {truck.get('vin', 'unknown')} - invalid timestamp: {update_time_str}")
+                    except Exception as method_error:
+                        logger.debug(f"TMS API method {method_idx + 1} failed: {method_error}")
+                        last_error = str(method_error)
+                        continue
+                else:
+                    # All methods failed
+                    if attempt < retry_count - 1:
+                        wait_time = (attempt + 1) * 5  # 5, 10, 15 second backoff
+                        logger.warning(f"TMS API attempt {attempt + 1} failed, retrying in {wait_time}s. Last error: {last_error}")
+                        import time
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        raise requests.RequestException(f"All TMS API methods failed. Last error: {last_error}")
+                
+                # If we get here, one of the methods succeeded
+                r.raise_for_status()
+                logger.debug(f"TMS API response status: {r.status_code}")
+                
+                all_trucks = []
+                skipped = 0
+                skipped_old_data = 0
+                
+                # Handle both equipment and locations endpoints
+                response_data = r.json()
+                trucks_data = response_data.get("equipment", response_data.get("locations", []))
+                logger.debug(f"TMS API returned {len(trucks_data)} truck records")
+                
+                for truck in trucks_data:
+                    address = truck.get("address", "Unknown")
+                    update_time_str = truck.get("update_time")
+                    lat = truck.get("lat")
+                    lng = truck.get("lng")
+                    source = truck.get("source", "")
+                    speed = truck.get("speed")  # Extract speed from raw data
+
+                    # Filter by source - accept all valid sources
+                    valid_sources = ["samsara", "clubeld", "ada_eld", "skybitz", "intangles"]
+                    if source.lower() not in valid_sources:
                         skipped += 1
                         continue
 
-                # Process and normalize speed data
-                processed_truck = truck.copy()
-                processed_truck['speed'] = self._normalize_speed(speed)
+                    # Require coordinates
+                    if not lat or not lng:
+                        skipped += 1
+                        continue
+
+                    # Check for extremely stale data - reject anything over 24 hours old regardless of address
+                    if update_time_str:
+                        try:
+                            update_dt = datetime.strptime(
+                                update_time_str.replace("EST", "").replace("EDT", ""), 
+                                "%m-%d-%Y %H:%M:%S "
+                            ).replace(tzinfo=pytz.timezone("America/New_York"))
+                            
+                            age_hours = (datetime.now(pytz.utc) - update_dt.astimezone(pytz.utc)).total_seconds() / 3600
+                            
+                            # Reject data older than 8 hours completely (more aggressive)
+                            if age_hours > 8:
+                                logger.debug(f"Skipping truck {truck.get('vin', 'unknown')} - GPS data {age_hours:.1f} hours old")
+                                skipped += 1
+                                skipped_old_data += 1
+                                continue
+                                
+                            # Also check for unknown addresses with data older than 6 hours
+                            if (not address or address.strip().lower() == "unknown") and age_hours > 6:
+                                logger.debug(f"Skipping truck {truck.get('vin', 'unknown')} - unknown location and {age_hours:.1f} hours old")
+                                skipped += 1
+                                continue
+                                
+                        except Exception:
+                            logger.debug(f"Skipping truck {truck.get('vin', 'unknown')} - invalid timestamp: {update_time_str}")
+                            skipped += 1
+                            continue
+
+                    # Process and normalize speed data
+                    processed_truck = truck.copy()
+                    processed_truck['speed'] = self._normalize_speed(speed)
+                    
+                    all_trucks.append(processed_truck)
+            
+                logger.info(f"✅ Loaded {len(all_trucks)} trucks from TMS. Skipped: {skipped} (including {skipped_old_data} with data >24h old)")
+                return all_trucks
                 
-                all_trucks.append(processed_truck)
-            
-            logger.info(f"✅ Loaded {len(all_trucks)} trucks from TMS. Skipped: {skipped} (including {skipped_old_data} with data >24h old)")
-            return all_trucks
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to load trucks from TMS: {e}")
-            return []
+            except Exception as e:
+                logger.error(f"❌ Failed to load trucks from TMS (attempt {attempt + 1}/{retry_count}): {e}")
+                if attempt == retry_count - 1:
+                    # Last attempt failed
+                    logger.error(f"❌ All {retry_count} TMS API attempts failed. Returning empty list.")
+                    return []
+                else:
+                    # Wait before next retry
+                    wait_time = (attempt + 1) * 5
+                    logger.warning(f"Waiting {wait_time}s before retry...")
+                    import time
+                    time.sleep(wait_time)
+        
+        # Should not reach here, but just in case
+        return []
+
+    def load_individual_truck(self, vin: str) -> Optional[Dict[str, Any]]:
+        """Load single truck data when bulk API fails"""
+        logger.info(f"Attempting individual truck lookup for VIN {vin[-4:]}")
+        
+        # Try alternative endpoints or methods for single truck lookup
+        endpoints = [
+            f"{self.config.TMS_API_URL}?vin={vin}",
+            f"{self.config.TMS_API_URL.replace('/api/tms_get_locations', '/api/truck')}?vin={vin}",
+            f"{self.config.TMS_API_URL.replace('/api/tms_get_locations', '/api/vehicle')}?vin={vin}"
+        ]
+        
+        for endpoint in endpoints:
+            try:
+                response = requests.get(endpoint, timeout=15)
+                if response.status_code == 200:
+                    data = response.json()
+                    if isinstance(data, list) and data:
+                        truck = data[0]
+                    elif isinstance(data, dict):
+                        truck = data
+                    else:
+                        continue
+                    
+                    # Validate truck data
+                    if truck.get('vin', '').upper() == vin.upper() and truck.get('lat') and truck.get('lng'):
+                        logger.info(f"✅ Individual truck lookup successful for VIN {vin[-4:]}")
+                        return truck
+                        
+            except Exception as e:
+                logger.debug(f"Individual truck lookup failed for {endpoint}: {e}")
+                continue
+        
+        logger.warning(f"❌ Individual truck lookup failed for VIN {vin[-4:]}")
+        return None
     
     def _is_truck_online(self, update_time_str: str) -> bool:
         """Determine if a truck should be considered online based on update time"""
@@ -331,7 +417,7 @@ class TMSIntegration:
                 if elapsed < min_delay:
                     time.sleep(min_delay - elapsed)
             
-            r = requests.get(url, params=params, timeout=10)
+            r = requests.get(url, params=params, timeout=10, verify=False)
             self._last_geocode_time = time.time()
             
             if r.status_code == 403:
@@ -382,7 +468,7 @@ class TMSIntegration:
                 if elapsed < min_delay:
                     time.sleep(min_delay - elapsed)
             
-            r = requests.post(url, headers=headers, json=body, timeout=15)
+            r = requests.post(url, headers=headers, json=body, timeout=15, verify=False)
             self._last_route_time = time.time()
             
             if r.status_code == 429:

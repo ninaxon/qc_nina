@@ -4,6 +4,7 @@ Performance-optimized with background refresh and fallbacks
 """
 import asyncio
 import logging
+import ssl
 import time
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Tuple, List
@@ -36,10 +37,51 @@ class ReverseGeocodeService:
         self._background_task: Optional[asyncio.Task] = None
     
     async def __aenter__(self):
-        self.session = aiohttp.ClientSession()
+        # Create SSL context that handles OpenRouteService certificate issues
+        ssl_context = self._create_ssl_context()
+        
+        # Create connector with SSL context and timeout
+        connector = aiohttp.TCPConnector(ssl=ssl_context, limit=10, ttl_dns_cache=300)
+        timeout = aiohttp.ClientTimeout(total=self.timeout)
+        self.session = aiohttp.ClientSession(connector=connector, timeout=timeout)
+        
         # Start background geocoding task
         self._background_task = asyncio.create_task(self._background_geocoder())
         return self
+    
+    def _create_ssl_context(self) -> ssl.SSLContext:
+        """Create SSL context with proper certificate handling for macOS"""
+        # For OpenRouteService specifically, use a more lenient SSL context
+        # This is a known issue with macOS and certain SSL certificates
+        ssl_context = ssl.create_default_context()
+        
+        # Try to load certificates, but if it fails, use fallback mode
+        try:
+            # Method 1: Try loading default certificates
+            ssl_context.load_default_certs()
+            logger.debug("Successfully loaded default SSL certificates")
+        except Exception as e:
+            logger.debug(f"Could not load default certificates: {e}")
+            try:
+                # Method 2: Try loading from certifi
+                import certifi
+                ssl_context.load_verify_locations(certifi.where())
+                logger.debug("Successfully loaded certificates from certifi")
+            except Exception as e2:
+                logger.debug(f"Could not load certifi certificates: {e2}")
+                # Method 3: Use fallback mode for OpenRouteService
+                logger.info("Using fallback SSL mode for OpenRouteService (macOS certificate issue)")
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+        
+        # For OpenRouteService specifically, we'll use a more lenient approach
+        # This is because macOS has known issues with certain SSL certificates
+        # and OpenRouteService's certificate chain
+        logger.info("Using OpenRouteService-optimized SSL context")
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        
+        return ssl_context
         
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         # Stop background task

@@ -511,37 +511,15 @@ class EnhancedLocationBot(RiskDetectionMixin):
 
 
     def _schedule_group_location_updates(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-        """Schedule automatic hourly location updates for groups with registered VINs"""
+        """DEPRECATED: Individual group scheduling - now handled by centralized GroupUpdateScheduler"""
+        logger.info(f"Individual group scheduling disabled for chat {chat_id} - using centralized GroupUpdateScheduler")
+        
+        # Mark session as enabled for compatibility but don't create individual jobs
         session = self.get_session(chat_id)
+        session.auto_refresh_enabled = True
         
-        # Check if job queue is available
-        if not context.job_queue:
-            logger.error(f"Job queue not available for chat {chat_id}, cannot schedule updates")
-            return
-            
-        # Cancel existing job if any
-        if session.auto_refresh_job_name:
-            self._cancel_job(chat_id, session.auto_refresh_job_name)
-        
-        # Create new job for location updates
-        job_name = f"group_location_{chat_id}_{datetime.now().timestamp()}"
-        
-        try:
-            context.job_queue.run_repeating(
-                callback=self._group_location_callback,
-                interval=self.group_location_interval,
-                first=10,  # First run after 10 seconds
-                name=job_name,
-                chat_id=chat_id,
-                data={'chat_id': chat_id, 'type': 'location'}
-            )
-            
-            session.auto_refresh_job_name = job_name
-            session.auto_refresh_enabled = True
-            
-            logger.info(f"Scheduled group location updates for chat {chat_id} every {self.group_location_interval}s")
-        except Exception as e:
-            logger.error(f"Failed to schedule group location updates for chat {chat_id}: {e}")
+        # The centralized GroupUpdateScheduler will handle all group updates
+        # This prevents duplicate jobs and connection blocking issues
 
     def _schedule_live_eta_tracking(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         """Schedule silent data refresh for ETA accuracy (no messages sent)"""
@@ -577,45 +555,9 @@ class EnhancedLocationBot(RiskDetectionMixin):
             logger.error(f"Failed to schedule silent data refresh for chat {chat_id}: {e}")
 
     async def _group_location_callback(self, context: ContextTypes.DEFAULT_TYPE):
-        """Callback for automatic group location updates (hourly)"""
-        chat_id = context.job.data['chat_id']
-        session = self.get_session(chat_id)
-        
-        try:
-            # Get VIN for this group
-            vin = self._get_group_vin(chat_id)
-            if not vin:
-                logger.debug(f"No VIN for group {chat_id}, stopping auto-updates")
-                self._cancel_job(chat_id, session.auto_refresh_job_name)
-                return
-            
-            # Fetch fresh location data
-            trucks = self.tms_integration.load_truck_list()
-            truck = self.tms_integration.find_truck_by_vin(trucks, vin)
-            
-            if not truck:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"⚠️ Truck with VIN {vin} not found in TMS data."
-                )
-                return
-            
-            # Update session with fresh coordinates
-            session.lat = truck.get('lat')
-            session.lng = truck.get('lng')
-            session.driver_name = truck.get('name', session.driver_name)
-            session.vin = vin
-            session.last_updated = datetime.now()
-            
-            # Send location update with persistent ETA options
-            await self._send_group_location_update(context, chat_id, session, truck)
-            
-        except Exception as e:
-            logger.error(f"Group location update failed for chat {chat_id}: {e}")
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"⚠️ Location update error: {str(e)}"
-            )
+        """DEPRECATED: Individual group callback - now handled by centralized GroupUpdateScheduler"""
+        logger.warning("Old individual group callback triggered - this should not happen with centralized scheduler")
+        # This method is kept for compatibility but should not be called
 
     async def _live_eta_callback(self, context: ContextTypes.DEFAULT_TYPE):
         """Callback for live ETA data refresh (silent updates for accuracy)"""
@@ -757,27 +699,38 @@ class EnhancedLocationBot(RiskDetectionMixin):
             return f"🔴 **Idle**"
 
     async def _send_group_location_update(self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, session: SessionData, truck: dict):
-        """Send hourly location update for groups with stop duration tracking"""
+        """Send location update using standardized renderer for consistency"""
         try:
-            # Use EDT timezone for all time calculations
-            edt_tz = pytz.timezone('America/New_York')
-            now_edt = datetime.now(edt_tz)
-            map_url = f"https://maps.google.com/?q={session.lat},{session.lng}"
-            
-            # Update stop duration tracking and get stop message if applicable
-            stop_message = self._update_stop_duration_tracking(session, truck, now_edt)
-            
-            # Base message format with proper speed handling and stop status
-            speed_display = self._format_speed_for_display(truck.get('speed', 0))
-            current_speed = self._normalize_speed(truck.get('speed', 0))
-            stop_status = self._get_stop_status_indicator(session, current_speed)
+            # Use centralized location renderer for consistent format
+            from location_renderer import render_location_update
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
             
             # Get correct driver name from Google Sheets assets data
-            driver_name = self.google_integration.get_driver_name_by_vin(session.vin) or session.driver_name or 'Unknown'
+            driver_name = self.google_integration.get_driver_name_by_vin(session.vin) or session.driver_name or 'Unknown Driver'
             
-            # Choose appropriate status emoji based on movement
-            header_emoji = "🟢" if current_speed > 0 else "🔴"
-            status_emoji = "🟢" if current_speed > 0 else "🔴"
+            # Parse update time from truck data or use current time
+            updated_at_utc = None
+            if truck.get('update_time'):
+                try:
+                    # Convert from NY time to UTC if needed
+                    updated_at_utc = datetime.now(ZoneInfo('UTC'))  # Simplified for now
+                except Exception:
+                    updated_at_utc = datetime.now(ZoneInfo('UTC'))
+            else:
+                updated_at_utc = datetime.now(ZoneInfo('UTC'))
+            
+            # Use standardized message format
+            message = render_location_update(
+                driver=driver_name,
+                status=truck.get('status', 'Unknown'),
+                lat=session.lat or 0.0,
+                lon=session.lng or 0.0,
+                speed_mph=self._normalize_speed(truck.get('speed', 0)),
+                updated_at_utc=updated_at_utc,
+                location_str=truck.get('address', 'Unknown Location'),
+                map_source="Manual Update"
+            )
             
             message = (
                 f"🚛 **LIVE UPDATE** {header_emoji}\n\n"

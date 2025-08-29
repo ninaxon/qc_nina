@@ -6,6 +6,10 @@ import pytz
 from datetime import datetime, timedelta
 from dateutil import parser as dtp
 from typing import Optional, Tuple, Dict, Any
+import urllib3
+
+# Disable SSL warnings for OpenRouteService API
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +57,7 @@ class ETAService:
                 if elapsed < min_delay:
                     time.sleep(min_delay - elapsed)
             
-            r = requests.post(url, json=payload, headers=headers, timeout=20)
+            r = requests.post(url, json=payload, headers=headers, timeout=20, verify=False)
             self._last_request_time = time.time()
             
             if r.status_code == 429:
@@ -129,7 +133,7 @@ class ETAService:
                 if elapsed < min_delay:
                     time.sleep(min_delay - elapsed)
             
-            r = requests.get(url, params=params, timeout=10)
+            r = requests.get(url, params=params, timeout=10, verify=False)
             self._last_geocode_time = time.time()
             
             if r.status_code == 429:

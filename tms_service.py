@@ -74,25 +74,24 @@ class TMSService:
             raise Exception(f"TMS request failed after {self.config.MAX_RETRY_ATTEMPTS} attempts")
     
     async def fetch_fleet_locations(self) -> List[FleetPoint]:
-        """Fetch all fleet locations and return as FleetPoint objects"""
+        """Fetch all fleet locations with fallback for 422 errors"""
         if not self.session:
             raise RuntimeError("TMSService not initialized - use async context manager")
         
         try:
-            # Use the same API structure as the working TMS integration
-            params = {
-                "api_key": self.config.TMS_API_KEY,
-                "api_hash": self.config.TMS_API_HASH
-            }
+            # First, try using the enhanced TMS integration with retry logic
+            from tms_integration import TMSIntegration
+            tms_integration = TMSIntegration(self.config)
             
-            response_data = await self._rate_limited_request(
-                'GET', 
-                self.config.TMS_API_URL,
-                params=params
-            )
+            # Try bulk API call with enhanced retry logic
+            trucks = tms_integration.load_truck_list(retry_count=3)
+            
+            if not trucks:
+                logger.warning("Bulk TMS API failed, attempting individual truck lookups")
+                trucks = await self._fallback_individual_lookups(tms_integration)
             
             fleet_points = []
-            for truck_data in response_data.get('locations', []):
+            for truck_data in trucks:
                 fleet_point = self._convert_to_fleet_point(truck_data)
                 if fleet_point:
                     fleet_points.append(fleet_point)
@@ -104,6 +103,51 @@ class TMSService:
             logger.error(f"Error fetching fleet locations: {e}")
             return []
     
+    async def _fallback_individual_lookups(self, tms_integration) -> List[Dict[str, Any]]:
+        """Fallback to individual truck lookups when bulk API fails"""
+        try:
+            # Get list of VINs from Google Sheets (registered groups)
+            google_integration = getattr(self, '_google_integration', None)
+            if not google_integration:
+                from google_integration import GoogleSheetsIntegration
+                google_integration = GoogleSheetsIntegration(self.config)
+            
+            # Get active group VINs to prioritize
+            records = google_integration._get_groups_records_safe()
+            active_vins = set()
+            
+            for record in records:
+                if (record.get('status', '').upper() == 'ACTIVE' and 
+                    record.get('vin')):
+                    active_vins.add(record['vin'].strip().upper())
+            
+            logger.info(f"Attempting individual lookups for {len(active_vins)} active VINs")
+            
+            # Try individual lookups for each active VIN
+            trucks = []
+            for vin in active_vins:
+                try:
+                    truck_data = tms_integration.load_individual_truck(vin)
+                    if truck_data:
+                        trucks.append(truck_data)
+                        logger.debug(f"Individual lookup successful for VIN {vin[-4:]}")
+                    else:
+                        logger.warning(f"Individual lookup failed for VIN {vin[-4:]}")
+                    
+                    # Rate limiting between individual requests
+                    await asyncio.sleep(0.5)
+                    
+                except Exception as e:
+                    logger.error(f"Error in individual lookup for VIN {vin[-4:]}: {e}")
+                    continue
+            
+            logger.info(f"Individual lookups completed: {len(trucks)} trucks found")
+            return trucks
+            
+        except Exception as e:
+            logger.error(f"Fallback individual lookups failed: {e}")
+            return []
+    
     def _convert_to_fleet_point(self, truck_data: Dict[str, Any]) -> Optional[FleetPoint]:
         """Convert TMS truck data to FleetPoint with proper timezone handling"""
         try:
@@ -112,10 +156,11 @@ class TMSService:
             if not vin:
                 return None
             
-            # Filter by source (like working integration)
+            # Accept all valid sources from TMS integration
             source = truck_data.get("source", "")
-            if source.lower() != "samsara":
-                return None  # Skip non-samsara data
+            valid_sources = ["samsara", "clubeld", "ada_eld", "skybitz", "intangles"]
+            if source.lower() not in valid_sources:
+                return None
             
             # Parse timestamp and ensure UTC with staleness detection
             updated_at_utc = None
@@ -151,13 +196,13 @@ class TMSService:
                             parsed_time = parsed_time.astimezone(ZoneInfo('UTC'))
                         
                         # Check if data is stale (older than max allowed age)
-                        max_age_hours = getattr(self.config, 'MAX_LOCATION_AGE_HOURS', 12)
+                        max_age_hours = getattr(self.config, 'MAX_LOCATION_AGE_HOURS', 8)
                         now_utc = datetime.now(ZoneInfo('UTC'))
                         age_hours = (now_utc - parsed_time).total_seconds() / 3600
                         
                         if age_hours > max_age_hours:
-                            logger.info(f"Correcting stale data for VIN {vin}: {age_hours:.1f}h old (max: {max_age_hours}h), using current time")
-                            updated_at_utc = now_utc  # Use current time for stale data
+                            logger.debug(f"Stale data for VIN {vin}: {age_hours:.1f}h old (max: {max_age_hours}h)")
+                            updated_at_utc = parsed_time  # Keep original timestamp
                         else:
                             updated_at_utc = parsed_time
                             logger.debug(f"Fresh data for VIN {vin}: {age_hours:.1f}h old")
@@ -169,13 +214,15 @@ class TMSService:
                 # No timestamp from TMS, use current time
                 updated_at_utc = datetime.now(ZoneInfo('UTC'))
             
-            # Normalize speed to mph (handle string input)
-            speed_raw = truck_data.get('speed', 0)
-            try:
-                speed = float(speed_raw) if speed_raw else 0.0
-            except (ValueError, TypeError):
-                speed = 0.0
+            # Use normalized speed from TMS integration if available
+            speed = truck_data.get('speed', 0.0)
+            if isinstance(speed, str):
+                try:
+                    speed = float(speed)
+                except (ValueError, TypeError):
+                    speed = 0.0
             
+            # Create status with speed info
             status = self._normalize_status(truck_data.get('status', ''), speed)
             
             return FleetPoint(
@@ -184,9 +231,9 @@ class TMSService:
                 location_str=str(truck_data.get('address', '')).strip() or None,
                 lat=truck_data.get('lat'),  # Use 'lat' not 'latitude'
                 lon=truck_data.get('lng'),  # Use 'lng' not 'longitude'
-                status=status,
+                status=status,  # Contains speed info for extraction via speed_mph()
                 updated_at_utc=updated_at_utc,
-                source="samsara"  # Use source from TMS data
+                source=source  # Use actual source from TMS data
             )
             
         except Exception as e:
