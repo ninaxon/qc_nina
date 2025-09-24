@@ -396,16 +396,16 @@ class GroupUpdateScheduler:
 
             try:
                 eld_worksheet = self.google.spreadsheet.worksheet(
-                    'ELD_tracker')
+                    'assets')
             except Exception as e:
-                logger.warning(f"ELD_tracker sheet not found: {e}")
+                logger.warning(f"assets sheet not found: {e}")
                 return 0
 
             # Get existing data to match by VIN
             try:
                 all_data = eld_worksheet.get_all_values()
                 if len(all_data) < 2:
-                    logger.warning("ELD_tracker sheet has no data rows")
+                    logger.warning("assets sheet has no data rows")
                     return 0
 
                 headers = [h.strip().lower() for h in all_data[0]]
@@ -419,7 +419,7 @@ class GroupUpdateScheduler:
                         break
 
                 if vin_col_idx is None:
-                    logger.error("VIN column not found in ELD_tracker sheet")
+                    logger.error("VIN column not found in assets sheet")
                     return 0
 
                 # Build VIN to row mapping
@@ -433,12 +433,12 @@ class GroupUpdateScheduler:
 
                 # Log VIN indexing statistics
                 logger.info(
-                    f"📊 ELD_tracker scan: {len(data_rows)} total rows, {len(vin_to_row)} valid VINs indexed")
+                    f"📊 assets sheet scan: {len(data_rows)} total rows, {len(vin_to_row)} valid VINs indexed")
                 logger.info(
                     f"🔍 VIN column found at index {vin_col_idx} (schema expects column E=4)")
 
             except Exception as e:
-                logger.error(f"Error reading ELD_tracker data: {e}")
+                logger.error(f"Error reading assets sheet data: {e}")
                 return 0
 
             # Prepare batch updates for F:K columns
@@ -509,12 +509,12 @@ class GroupUpdateScheduler:
                     f"⚠️ Skipped {skipped_count} unknown VINs: {skipped_samples[:5]}")
                 logger.info(
                     f"✅ Executed {len(batch_updates)} updates in {len(range(0, len(batch_updates), 50))} chunks")
-                logger.info(f"Updated {updated_count} records in ELD_tracker")
+                logger.info(f"Updated {updated_count} records in assets sheet")
 
             return updated_count
 
         except Exception as e:
-            logger.error(f"Error updating ELD_tracker: {e}")
+            logger.error(f"Error updating assets sheet: {e}")
             return 0
 
     def _get_active_groups(self) -> List[Dict]:

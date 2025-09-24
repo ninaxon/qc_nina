@@ -48,8 +48,8 @@ SHEET_SCHEMAS = {
         key_columns=['group_id'],
         required_columns=['group_id', 'vin', 'status']
     ),
-    'ELD_tracker': SheetSchema(
-        name='ELD_tracker',
+    'assets': SheetSchema(
+        name='assets',
         headers=[
             'VIN', 'A', 'B', 'C', 'D', 'Last Known Location',
             'Latitude', 'Longitude', 'Status', 'Update Time', 'Source'
@@ -520,15 +520,15 @@ class SheetsModelManager:
     def batch_update_eld_tracker(self, points: Iterable[FleetPoint]) -> int:
         """5-minute batch update of F:K columns matched by VIN"""
         try:
-            worksheet = self._get_worksheet_safe('ELD_tracker')
+            worksheet = self._get_worksheet_safe('assets')
             if not worksheet:
-                logger.warning("ELD_tracker worksheet not available")
+                logger.warning("assets worksheet not available")
                 return 0
 
             # Get all data to match by VIN
             all_data = worksheet.get_all_values()
             if len(all_data) < 2:
-                logger.warning("ELD_tracker has no data rows")
+                logger.warning("assets sheet has no data rows")
                 return 0
 
             headers = all_data[0]
@@ -538,7 +538,7 @@ class SheetsModelManager:
             # Find VIN column (should be column A)
             vin_col = self._find_header_column(header_map, 'VIN')
             if vin_col is None:
-                logger.error("VIN column not found in ELD_tracker")
+                logger.error("VIN column not found in assets sheet")
                 return 0
 
             # Build VIN to row mapping
@@ -591,15 +591,15 @@ class SheetsModelManager:
                         time.sleep(0.1)  # Rate limiting
                     except Exception as e:
                         logger.error(
-                            f"ELD_tracker batch update failed for chunk {i//chunk_size}: {e}")
+                            f"assets sheet batch update failed for chunk {i//chunk_size}: {e}")
 
-                logger.info(f"ELD_tracker updated: {updated_count} VINs")
+                logger.info(f"assets sheet updated: {updated_count} VINs")
 
             self.metrics['eld_tracker_updates'] += updated_count
             return updated_count
 
         except Exception as e:
-            logger.error(f"Error updating ELD_tracker: {e}")
+            logger.error(f"Error updating assets sheet: {e}")
             return 0
 
     # =====================================================
