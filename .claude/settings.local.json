@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Read(//var/folders/xw/z6y1glz96rqbhbm3lv604d5c0000gn/T/TemporaryItems/NSIRD_screencaptureui_X7Wt6q/**)",
+      "Read(//var/folders/xw/z6y1glz96rqbhbm3lv604d5c0000gn/T/TemporaryItems/NSIRD_screencaptureui_1Lcwab/**)"
+    ],
+    "deny": []
+  }
+}

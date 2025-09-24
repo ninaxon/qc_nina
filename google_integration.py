@@ -32,6 +32,7 @@ except ImportError:
     RATE_LIMITING_AVAILABLE = False
     RateLimitedSheetsWrapper = None
 
+
 class GoogleSheetsIntegration:
     """Enhanced Google Sheets integration with QC PANEL → assets sync"""
 
@@ -53,11 +54,12 @@ class GoogleSheetsIntegration:
         self.cache_duration = timedelta(minutes=5)
         self._active_cache = {}
         self._active_cache_ts = None
-        
+
         # Groups records cache to reduce header duplication issues
         self._groups_records_cache = None
         self._groups_records_cache_ts = None
-        self._groups_records_cache_duration = timedelta(seconds=30)  # Short cache to reduce repeated calls
+        self._groups_records_cache_duration = timedelta(
+            seconds=30)  # Short cache to reduce repeated calls
 
         # Rate limiting
         self.rate_limiter = None
@@ -66,24 +68,29 @@ class GoogleSheetsIntegration:
             logger.info("Rate limiting enabled for Google Sheets operations")
 
         # Column mapping - enabled for robust column access
-        self.use_column_mapping = COLUMN_MAPPING_AVAILABLE and getattr(config, 'USE_COLUMN_MAPPING', True)
+        self.use_column_mapping = COLUMN_MAPPING_AVAILABLE and getattr(
+            config, 'USE_COLUMN_MAPPING', True)
         self.assets_mapper = None
-        
+
         if self.use_column_mapping and COLUMN_MAPPING_AVAILABLE:
             try:
                 initialize_column_mapper(config)
                 self.assets_mapper = AssetsColumnMapper(config=config)
                 logger.info("Column mapping enabled for robust column access")
-                logger.info(f"Assets columns: Driver={config.ASSETS_DRIVER_NAME_COL}, VIN={config.ASSETS_VIN_COL}")
+                logger.info(
+                    f"Assets columns: Driver={config.ASSETS_DRIVER_NAME_COL}, VIN={config.ASSETS_VIN_COL}")
             except Exception as e:
                 logger.error(f"Failed to initialize column mapping: {e}")
                 self.use_column_mapping = False
-                logger.info("Falling back to header-based access with rate limiting")
+                logger.info(
+                    "Falling back to header-based access with rate limiting")
         else:
-            logger.info("Column mapping not available - using header-based access with rate limiting")
+            logger.info(
+                "Column mapping not available - using header-based access with rate limiting")
 
         # Logging settings
-        self.enable_dashboard_logging = getattr(config, 'ENABLE_DASHBOARD_LOGGING', True)
+        self.enable_dashboard_logging = getattr(
+            config, 'ENABLE_DASHBOARD_LOGGING', True)
 
         # Initialize connection
         self._initialize_connection()
@@ -100,14 +107,16 @@ class GoogleSheetsIntegration:
     def _initialize_connection(self):
         """Initialize Google Sheets connection with enhanced error handling"""
         if not GSPREAD_AVAILABLE:
-            raise ImportError("gspread is not installed. Install with: pip install gspread")
+            raise ImportError(
+                "gspread is not installed. Install with: pip install gspread")
 
         try:
             # Use service account file from config
             service_account_file = self.config.SHEETS_SERVICE_ACCOUNT_FILE
 
             if not os.path.exists(service_account_file):
-                raise FileNotFoundError(f"Service account file not found: {service_account_file}")
+                raise FileNotFoundError(
+                    f"Service account file not found: {service_account_file}")
 
             logger.info(f"Using service account file: {service_account_file}")
 
@@ -116,20 +125,24 @@ class GoogleSheetsIntegration:
 
             # Open the main spreadsheet
             self.spreadsheet = self.gc.open_by_key(self.config.SPREADSHEET_ID)
-            logger.info(f"Successfully connected to Google Sheets: {self.config.SPREADSHEET_ID}")
+            logger.info(
+                f"Successfully connected to Google Sheets: {self.config.SPREADSHEET_ID}")
 
             # Initialize QC Panel spreadsheet if configured
             if self.config.QC_PANEL_SPREADSHEET_ID:
                 try:
-                    self.qc_panel_spreadsheet = self.gc.open_by_key(self.config.QC_PANEL_SPREADSHEET_ID)
-                    logger.info(f"Connected to QC Panel spreadsheet: {self.config.QC_PANEL_SPREADSHEET_ID}")
+                    self.qc_panel_spreadsheet = self.gc.open_by_key(
+                        self.config.QC_PANEL_SPREADSHEET_ID)
+                    logger.info(
+                        f"Connected to QC Panel spreadsheet: {self.config.QC_PANEL_SPREADSHEET_ID}")
                 except Exception as e:
-                    logger.warning(f"Could not connect to QC Panel spreadsheet: {e}")
+                    logger.warning(
+                        f"Could not connect to QC Panel spreadsheet: {e}")
                     self.qc_panel_spreadsheet = None
 
             # Initialize all worksheets
             self._initialize_worksheets()
-            
+
             # Apply rate limiting to worksheets if available
             if self.rate_limiter:
                 self._apply_rate_limiting()
@@ -142,16 +155,21 @@ class GoogleSheetsIntegration:
         """Initialize all required worksheets"""
         try:
             # Assets worksheet (main data)
-            self.assets_worksheet = self.spreadsheet.worksheet(self.config.SPREADSHEET_ASSETS)
-            logger.info(f"Connected to assets worksheet: {self.config.SPREADSHEET_ASSETS}")
+            self.assets_worksheet = self.spreadsheet.worksheet(
+                self.config.SPREADSHEET_ASSETS)
+            logger.info(
+                f"Connected to assets worksheet: {self.config.SPREADSHEET_ASSETS}")
 
             # Groups worksheet
             try:
-                self.groups_worksheet = self.spreadsheet.worksheet(self.config.SPREADSHEET_GROUPS)
-                logger.info(f"Connected to groups worksheet: {self.config.SPREADSHEET_GROUPS}")
+                self.groups_worksheet = self.spreadsheet.worksheet(
+                    self.config.SPREADSHEET_GROUPS)
+                logger.info(
+                    f"Connected to groups worksheet: {self.config.SPREADSHEET_GROUPS}")
             except gspread.exceptions.WorksheetNotFound:
                 self.groups_worksheet = self._create_groups_worksheet()
-                logger.info(f"Created groups worksheet: {self.config.SPREADSHEET_GROUPS}")
+                logger.info(
+                    f"Created groups worksheet: {self.config.SPREADSHEET_GROUPS}")
 
             # Initialize logging worksheets if enabled
             if self.enable_dashboard_logging:
@@ -166,25 +184,31 @@ class GoogleSheetsIntegration:
         """Apply rate limiting to all worksheets"""
         try:
             if self.assets_worksheet:
-                self.assets_worksheet = self.rate_limiter.wrap_worksheet(self.assets_worksheet)
+                self.assets_worksheet = self.rate_limiter.wrap_worksheet(
+                    self.assets_worksheet)
                 logger.debug("Applied rate limiting to assets worksheet")
 
             if self.groups_worksheet:
-                self.groups_worksheet = self.rate_limiter.wrap_worksheet(self.groups_worksheet)
+                self.groups_worksheet = self.rate_limiter.wrap_worksheet(
+                    self.groups_worksheet)
                 logger.debug("Applied rate limiting to groups worksheet")
 
             if self.fleet_status_worksheet:
-                self.fleet_status_worksheet = self.rate_limiter.wrap_worksheet(self.fleet_status_worksheet)
+                self.fleet_status_worksheet = self.rate_limiter.wrap_worksheet(
+                    self.fleet_status_worksheet)
                 logger.debug("Applied rate limiting to fleet_status worksheet")
 
             if self.dashboard_logs_worksheet:
-                self.dashboard_logs_worksheet = self.rate_limiter.wrap_worksheet(self.dashboard_logs_worksheet)
-                logger.debug("Applied rate limiting to dashboard_logs worksheet")
+                self.dashboard_logs_worksheet = self.rate_limiter.wrap_worksheet(
+                    self.dashboard_logs_worksheet)
+                logger.debug(
+                    "Applied rate limiting to dashboard_logs worksheet")
 
             # Also wrap QC Panel worksheets if available
             if self.qc_panel_spreadsheet:
                 # We'll wrap individual worksheets as they're accessed
-                logger.debug("QC Panel spreadsheet available for rate limiting")
+                logger.debug(
+                    "QC Panel spreadsheet available for rate limiting")
 
             logger.info("Rate limiting successfully applied to all worksheets")
         except Exception as e:
@@ -219,11 +243,16 @@ class GoogleSheetsIntegration:
     def _initialize_dashboard_logs_worksheet(self):
         """Initialize or create dashboard logs worksheet"""
         try:
-            worksheet_name = getattr(self.config, 'SPREADSHEET_DASHBOARD', 'dashboard_logs')
+            worksheet_name = getattr(
+                self.config,
+                'SPREADSHEET_DASHBOARD',
+                'dashboard_logs')
 
             try:
-                self.dashboard_logs_worksheet = self.spreadsheet.worksheet(worksheet_name)
-                logger.info(f"Dashboard logs worksheet '{worksheet_name}' already exists")
+                self.dashboard_logs_worksheet = self.spreadsheet.worksheet(
+                    worksheet_name)
+                logger.info(
+                    f"Dashboard logs worksheet '{worksheet_name}' already exists")
             except gspread.exceptions.WorksheetNotFound:
                 self.dashboard_logs_worksheet = self.spreadsheet.add_worksheet(
                     title=worksheet_name, rows=2000, cols=12
@@ -231,12 +260,21 @@ class GoogleSheetsIntegration:
 
                 # Set headers for dashboard logs
                 headers = [
-                    "timestamp", "event_type", "user_id", "chat_id", "command",
-                    "vin", "driver_name", "success", "error_message", "duration_ms",
-                    "session_data", "notes"
-                ]
+                    "timestamp",
+                    "event_type",
+                    "user_id",
+                    "chat_id",
+                    "command",
+                    "vin",
+                    "driver_name",
+                    "success",
+                    "error_message",
+                    "duration_ms",
+                    "session_data",
+                    "notes"]
                 self.dashboard_logs_worksheet.update('A1', [headers])
-                logger.info(f"Created dashboard logs worksheet '{worksheet_name}'")
+                logger.info(
+                    f"Created dashboard logs worksheet '{worksheet_name}'")
 
         except Exception as e:
             logger.error(f"Failed to initialize dashboard logs worksheet: {e}")
@@ -244,11 +282,16 @@ class GoogleSheetsIntegration:
     def _initialize_fleet_status_worksheet(self):
         """Initialize or create fleet status worksheet"""
         try:
-            worksheet_name = getattr(self.config, 'SPREADSHEET_FLEET_STATUS', 'fleet_status')
+            worksheet_name = getattr(
+                self.config,
+                'SPREADSHEET_FLEET_STATUS',
+                'fleet_status')
 
             try:
-                self.fleet_status_worksheet = self.spreadsheet.worksheet(worksheet_name)
-                logger.info(f"Fleet status worksheet '{worksheet_name}' already exists")
+                self.fleet_status_worksheet = self.spreadsheet.worksheet(
+                    worksheet_name)
+                logger.info(
+                    f"Fleet status worksheet '{worksheet_name}' already exists")
             except gspread.exceptions.WorksheetNotFound:
                 self.fleet_status_worksheet = self.spreadsheet.add_worksheet(
                     title=worksheet_name, rows=1000, cols=20
@@ -256,11 +299,21 @@ class GoogleSheetsIntegration:
 
                 # Set headers for fleet status - match actual worksheet headers
                 headers = [
-                    "vin", "driver_name", "last_updated", "latitude", "longitude", "address",
-                    "speed_mph", "status", "movement_status", "risk_level", "group_chat_id", "last_contact"
-                ]
+                    "vin",
+                    "driver_name",
+                    "last_updated",
+                    "latitude",
+                    "longitude",
+                    "address",
+                    "speed_mph",
+                    "status",
+                    "movement_status",
+                    "risk_level",
+                    "group_chat_id",
+                    "last_contact"]
                 self.fleet_status_worksheet.update('A1', [headers])
-                logger.info(f"Created fleet status worksheet '{worksheet_name}'")
+                logger.info(
+                    f"Created fleet status worksheet '{worksheet_name}'")
 
         except Exception as e:
             logger.error(f"Failed to initialize fleet status worksheet: {e}")
@@ -273,7 +326,8 @@ class GoogleSheetsIntegration:
         """Open QC Panel spreadsheet"""
         if not self.qc_panel_spreadsheet:
             if self.config.QC_PANEL_SPREADSHEET_ID:
-                self.qc_panel_spreadsheet = self.gc.open_by_key(self.config.QC_PANEL_SPREADSHEET_ID)
+                self.qc_panel_spreadsheet = self.gc.open_by_key(
+                    self.config.QC_PANEL_SPREADSHEET_ID)
             else:
                 raise ValueError("QC_PANEL_SPREADSHEET_ID not configured")
         return self.qc_panel_spreadsheet
@@ -292,6 +346,35 @@ class GoogleSheetsIntegration:
     def _norm_driver(s):
         """Normalize driver name"""
         return str(s or "").strip().lower()
+    
+    def _fuzzy_match_driver(self, qc_name, assets_name):
+        """
+        Fuzzy match driver names between QC Panel and Assets sheet.
+        Handles different name orders and formats.
+        """
+        qc_norm = self._norm_driver(qc_name)
+        assets_norm = self._norm_driver(assets_name)
+        
+        # Direct match first
+        if qc_norm == assets_norm:
+            return True
+            
+        # Split names into tokens for fuzzy matching
+        qc_tokens = set(qc_norm.split())
+        assets_tokens = set(assets_norm.split())
+        
+        # Remove common noise words
+        noise_words = {'jr', 'sr', 'ii', 'iii', 'iv'}
+        qc_tokens -= noise_words
+        assets_tokens -= noise_words
+        
+        # Must have at least 2 tokens to match
+        if len(qc_tokens) < 2 or len(assets_tokens) < 2:
+            return False
+            
+        # Check if we have significant overlap (at least 2 matching tokens)
+        matching_tokens = qc_tokens & assets_tokens
+        return len(matching_tokens) >= 2
 
     def _get_groups_records_safe(self):
         """
@@ -299,12 +382,12 @@ class GoogleSheetsIntegration:
         """
         # Check cache first
         now = datetime.now()
-        if (self._groups_records_cache is not None and 
+        if (self._groups_records_cache is not None and
             self._groups_records_cache_ts is not None and
-            now - self._groups_records_cache_ts < self._groups_records_cache_duration):
+                now - self._groups_records_cache_ts < self._groups_records_cache_duration):
             logger.debug("Using cached groups records")
             return self._groups_records_cache
-        
+
         try:
             # Try the normal method first
             records = self.groups_worksheet.get_all_records()
@@ -315,14 +398,16 @@ class GoogleSheetsIntegration:
             return records
         except Exception as e:
             if "header row in the worksheet is not unique" in str(e):
-                logger.warning("Working around header duplication issue in groups worksheet")
+                logger.warning(
+                    "Working around header duplication issue in groups worksheet")
                 # Fallback to manual record creation
                 try:
                     all_data = self.groups_worksheet.get_all_values()
                     if len(all_data) < 2:
                         records = []
                     else:
-                        headers = [h.strip() for h in all_data[0] if h.strip()]  # Remove empty headers
+                        # Remove empty headers
+                        headers = [h.strip() for h in all_data[0] if h.strip()]
                         data_rows = all_data[1:]
 
                         records = []
@@ -330,10 +415,12 @@ class GoogleSheetsIntegration:
                             # Pad row if it's shorter than headers
                             padded_row = row + [''] * (len(headers) - len(row))
                             # Only use non-empty headers
-                            record = dict(zip(headers, padded_row[:len(headers)]))
+                            record = dict(
+                                zip(headers, padded_row[:len(headers)]))
                             records.append(record)
 
-                    logger.info(f"Successfully retrieved {len(records)} records using fallback method")
+                    logger.info(
+                        f"Successfully retrieved {len(records)} records using fallback method")
                     # Update cache
                     self._groups_records_cache = records
                     self._groups_records_cache_ts = now
@@ -342,7 +429,8 @@ class GoogleSheetsIntegration:
                     logger.error(f"Fallback method also failed: {fallback_e}")
                     # Return cached data if available, even if stale
                     if self._groups_records_cache is not None:
-                        logger.warning("Returning stale cached data due to errors")
+                        logger.warning(
+                            "Returning stale cached data due to errors")
                         return self._groups_records_cache
                     return []
             else:
@@ -352,7 +440,7 @@ class GoogleSheetsIntegration:
                     logger.warning("Returning stale cached data due to errors")
                     return self._groups_records_cache
                 return []
-    
+
     def _invalidate_groups_cache(self):
         """Invalidate the groups records cache"""
         self._groups_records_cache = None
@@ -378,13 +466,84 @@ class GoogleSheetsIntegration:
             logger.error(f"Failed to get worksheet {worksheet_name}: {e}")
             return None
 
+    def _is_appointment_current(self, appointment_str: str) -> bool:
+        """
+        Check if appointment date is current (not overdue)
+        
+        Args:
+            appointment_str: Date string from QC Panel (various formats)
+            
+        Returns:
+            bool: True if appointment is current/future, False if overdue
+        """
+        if not appointment_str or not appointment_str.strip():
+            return True  # No appointment date, assume current
+            
+        try:
+            from datetime import datetime, timedelta
+            import re
+            
+            # Clean up the appointment string
+            appt_clean = appointment_str.strip().lower()
+            
+            # Skip non-date entries
+            if any(word in appt_clean for word in ['need', 'check', 'tbd', 'asap', 'unknown', 'n/a']):
+                return True  # Assume current if no specific date
+            
+            # Common date patterns from QC Panel
+            date_patterns = [
+                r'(\d{1,2})/(\d{1,2})/(\d{4})',  # MM/DD/YYYY or M/D/YYYY
+                r'(\d{4})-(\d{1,2})-(\d{1,2})',  # YYYY-MM-DD
+                r'(\d{1,2})/(\d{1,2})/(\d{2})',  # MM/DD/YY
+            ]
+            
+            parsed_date = None
+            for pattern in date_patterns:
+                match = re.search(pattern, appt_clean)
+                if match:
+                    try:
+                        if '/' in pattern and len(match.group(3)) == 4:
+                            # MM/DD/YYYY format
+                            month, day, year = int(match.group(1)), int(match.group(2)), int(match.group(3))
+                            parsed_date = datetime(year, month, day)
+                        elif '-' in pattern:
+                            # YYYY-MM-DD format
+                            year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
+                            parsed_date = datetime(year, month, day)
+                        elif '/' in pattern and len(match.group(3)) == 2:
+                            # MM/DD/YY format
+                            month, day, year = int(match.group(1)), int(match.group(2)), 2000 + int(match.group(3))
+                            parsed_date = datetime(year, month, day)
+                        break
+                    except ValueError:
+                        continue
+            
+            if parsed_date:
+                # Add buffer - consider loads overdue if delivery appointment is more than 1 day old
+                cutoff_date = datetime.now() - timedelta(days=1)
+                is_current = parsed_date >= cutoff_date
+                
+                if not is_current:
+                    logger.debug(f"Appointment {appointment_str} is overdue (parsed: {parsed_date}, cutoff: {cutoff_date})")
+                
+                return is_current
+            else:
+                # Could not parse date, assume current
+                logger.debug(f"Could not parse appointment date: {appointment_str}")
+                return True
+                
+        except Exception as e:
+            logger.error(f"Error parsing appointment date '{appointment_str}': {e}")
+            return True  # Default to current on error
+
     def get_active_load_map(self) -> dict:
         """
-        Build dict of active loads keyed by VIN and by driver (fallback).
+        Build dict of active loads keyed by driver name only.
+        QC Panel does not contain VINs - only driver names.
         Include only rows where STS OF DEL (col S) is one of the monitored statuses.
         Exact QC PANEL columns:
-          D '#' (Load id), T 'PU APT', U 'PU ADDRESS', V 'DEL APT', W 'DEL ADDRESS'
-          R 'STS OF PU', S 'STS OF DEL'
+          DRIVER (Driver name), D '#' (Load id), T 'PU APT', U 'PU ADDRESS', 
+          V 'DEL APT', W 'DEL ADDRESS', R 'STS OF PU', S 'STS OF DEL'
         """
         if not self.config.QC_PANEL_SPREADSHEET_ID:
             logger.warning("QC Panel spreadsheet not configured")
@@ -392,16 +551,22 @@ class GoogleSheetsIntegration:
 
         try:
             sh = self._open_qc_panel()
-            tabs = [t.strip() for t in (self.config.QC_ACTIVE_TABS or "").split(",") if t.strip()]
-            
+            tabs = [
+                t.strip() for t in (
+                    self.config.QC_ACTIVE_TABS or "").split(",") if t.strip()]
+
             # Fix: Ensure RISK_MONITOR_DEL_STATUSES is a string, not boolean
             risk_statuses = self.config.RISK_MONITOR_DEL_STATUSES
             if isinstance(risk_statuses, bool) or risk_statuses is None:
                 risk_statuses = "IN TRANSIT,WILL BE LATE,AT SHIPPER"  # Default values
-                logger.warning(f"RISK_MONITOR_DEL_STATUSES is not a string, using defaults: {risk_statuses}")
-            
-            watch = {x.strip().upper() for x in str(risk_statuses).split(",") if x.strip()}
+                logger.warning(
+                    f"RISK_MONITOR_DEL_STATUSES is not a string, using defaults: {risk_statuses}")
+
+            watch = {x.strip().upper()
+                     for x in str(risk_statuses).split(",") if x.strip()}
             out = {}
+            processed_loads = set()  # Track processed load IDs to avoid duplicates
+            processed_drivers = set()  # Track processed drivers (1 driver = 1 active load)
 
             for tab in tabs:
                 try:
@@ -412,49 +577,82 @@ class GoogleSheetsIntegration:
                     try:
                         rows = ws.get_all_records()  # assumes header row 1
                     except Exception as e:
-                        if "header row in the worksheet is not unique" in str(e):
-                            logger.warning(f"Working around header duplication issue in QC Panel tab '{tab}'")
+                        if "header row in the worksheet is not unique" in str(
+                                e):
+                            logger.warning(
+                                f"Working around header duplication issue in QC Panel tab '{tab}'")
                             try:
                                 all_data = ws.get_all_values()
                                 if len(all_data) < 2:
                                     continue
-                                headers = [h.strip() for h in all_data[0] if h.strip()]
+                                headers = [h.strip()
+                                           for h in all_data[0] if h.strip()]
                                 data_rows = all_data[1:]
                                 rows = []
                                 for row in data_rows:
-                                    padded_row = row + [''] * (len(headers) - len(row))
-                                    record = dict(zip(headers, padded_row[:len(headers)]))
+                                    padded_row = row + \
+                                        [''] * (len(headers) - len(row))
+                                    record = dict(
+                                        zip(headers, padded_row[:len(headers)]))
                                     rows.append(record)
-                                logger.info(f"Successfully retrieved {len(rows)} QC Panel records using fallback method for tab '{tab}'")
+                                logger.info(
+                                    f"Successfully retrieved {len(rows)} QC Panel records using fallback method for tab '{tab}'")
                             except Exception as fallback_e:
-                                logger.error(f"Fallback method failed for QC Panel tab '{tab}': {fallback_e}")
+                                logger.error(
+                                    f"Fallback method failed for QC Panel tab '{tab}': {fallback_e}")
                                 continue
                         else:
-                            logger.error(f"Error getting QC Panel records from tab '{tab}': {e}")
+                            logger.error(
+                                f"Error getting QC Panel records from tab '{tab}': {e}")
                             continue
 
                     for r in rows:
-                        vin     = self._norm_vin(r.get("VIN", ""))
-                        driver  = self._norm_driver(r.get("DRIVER", ""))
+                        driver = self._norm_driver(r.get("DRIVER", ""))
                         del_sts = self._norm(r.get("STS OF DEL", "")).upper()
+                        load_id = self._norm(r.get("#", ""))
 
                         if del_sts not in watch:
                             continue
 
+                        # Skip rows without driver name
+                        if not driver:
+                            continue
+
+                        # NEW: Check delivery appointment date - skip if delivery is overdue
+                        del_appt = self._norm(r.get("DEL APT", ""))
+                        if not self._is_appointment_current(del_appt):
+                            logger.debug(f"Skipping load {load_id} - delivery appointment is overdue: {del_appt}")
+                            continue
+
+                        # Skip duplicate load IDs (same load can't be in multiple places)
+                        if load_id and load_id in processed_loads:
+                            logger.debug(f"Skipping duplicate load ID: {load_id}")
+                            continue
+
+                        # Skip drivers already processed (1 driver = 1 active load)
+                        driver_key = driver.lower().strip()
+                        if driver_key in processed_drivers:
+                            logger.debug(f"Skipping driver {driver} - already has active load")
+                            continue
+
                         payload = {
                             "driver_name": self._norm(r.get("DRIVER", "")),
-                            "load_id":     self._norm(r.get("#", "")),                 # D
-                            "pu_address":  self._norm(r.get("PU ADDRESS", "")),        # U
-                            "pu_appt":     self._norm(r.get("PU APT", "")),            # T
-                            "del_address": self._norm(r.get("DEL ADDRESS", "")),       # W
-                            "del_appt":    self._norm(r.get("DEL APT", "")),           # V
-                            "pu_status":   self._norm(r.get("STS OF PU", "")),         # R
-                            "del_status":  del_sts,                                     # S
-                            "in_transit":  True,
-                            "is_late":     del_sts == "WILL BE LATE",
+                            "load_id": load_id,
+                            "pu_address": self._norm(r.get("PU ADDRESS", "")),
+                            "pu_appt": self._norm(r.get("PU APT", "")),
+                            "del_address": self._norm(r.get("DEL ADDRESS", "")),
+                            "del_appt": self._norm(r.get("DEL APT", "")),
+                            "pu_status": self._norm(r.get("STS OF PU", "")),
+                            "del_status": del_sts,
+                            "in_transit": True,
+                            "is_late": del_sts == "WILL BE LATE",
                         }
-                        if vin:    out[vin]    = payload
-                        if driver: out[driver] = payload
+                        
+                        # Add to output and mark as processed
+                        out[driver_key] = payload
+                        if load_id:
+                            processed_loads.add(load_id)
+                        processed_drivers.add(driver_key)
                 except Exception as e:
                     logger.error(f"Error processing QC Panel tab '{tab}': {e}")
                     continue
@@ -465,31 +663,35 @@ class GoogleSheetsIntegration:
             logger.error(f"Error getting active load map: {e}")
             return {}
 
-    def get_active_load_status_for_vin(self, vin: str) -> dict | None:
-        """Get active load status for specific VIN with enhanced caching"""
+    def get_active_load_status_for_driver(self, driver_name: str) -> dict | None:
+        """Get active load status for specific driver name with enhanced caching"""
         now = datetime.utcnow()
         cache_ts = getattr(self, "_active_cache_ts", None)
-        
-        # Enhanced cache duration - 3 minutes instead of 90 seconds to reduce API calls
+
+        # Enhanced cache duration - 3 minutes instead of 90 seconds to reduce
+        # API calls
         cache_duration_seconds = 180
-        
+
         if not cache_ts or (now - cache_ts).seconds > cache_duration_seconds:
-            logger.debug(f"Refreshing active load cache (last update: {cache_ts})")
+            logger.debug(
+                f"Refreshing active load cache (last update: {cache_ts})")
             try:
                 self._active_cache = self.get_active_load_map()
                 self._active_cache_ts = now
-                logger.info(f"Active load cache refreshed with {len(self._active_cache)} entries")
+                logger.info(
+                    f"Active load cache refreshed with {len(self._active_cache)} entries")
             except Exception as e:
                 logger.error(f"Failed to refresh active load cache: {e}")
                 # Return stale data if available
                 if hasattr(self, '_active_cache') and self._active_cache:
-                    logger.warning("Using stale cache data due to refresh failure")
-                    return self._active_cache.get(self._norm_vin(vin))
+                    logger.warning(
+                        "Using stale cache data due to refresh failure")
+                    return self._active_cache.get(self._norm_driver(driver_name))
                 return None
         else:
             logger.debug("Using cached active load data")
-            
-        return self._active_cache.get(self._norm_vin(vin))
+
+        return self._active_cache.get(self._norm_driver(driver_name))
 
     def sync_active_loads_to_assets(self) -> int:
         """
@@ -508,12 +710,13 @@ class GoogleSheetsIntegration:
 
             ws = self.assets_worksheet
             data = self._get_assets_records_safe()
-            
+
             # Use column mapping for robust column access
             if self.use_column_mapping and self.assets_mapper:
                 # Get column indices from column mapping
                 c = {
-                    "VIN": self.assets_mapper.get_column_index("vin") + 1,  # +1 for 1-based indexing
+                    # +1 for 1-based indexing
+                    "VIN": self.assets_mapper.get_column_index("vin") + 1,
                     "Driver": self.assets_mapper.get_column_index("driver_name") + 1,
                     "Load": self.assets_mapper.get_column_index("load_id") + 1,
                     "PU_ADDR": self.assets_mapper.get_column_index("pu_address") + 1,
@@ -525,6 +728,7 @@ class GoogleSheetsIntegration:
             else:
                 # Fallback to header-based column lookup
                 headers = ws.row_values(1)
+
                 def col(name):
                     return headers.index(name) + 1 if name in headers else None
 
@@ -539,9 +743,11 @@ class GoogleSheetsIntegration:
                 }
 
                 # Check if required columns exist
-                missing_cols = [name for name, col_idx in c.items() if col_idx is None]
+                missing_cols = [name for name,
+                                col_idx in c.items() if col_idx is None]
                 if missing_cols:
-                    logger.warning(f"Missing columns in assets sheet: {missing_cols}")
+                    logger.warning(
+                        f"Missing columns in assets sheet: {missing_cols}")
                     # Add missing columns if needed
                     self._ensure_assets_columns(headers, missing_cols)
                     # Refresh headers and column mapping
@@ -566,30 +772,54 @@ class GoogleSheetsIntegration:
                     vin = self._norm_vin(rec.get("VIN", ""))
                     drv = self._norm_driver(rec.get("Driver Name", ""))
 
-                # Prioritize driver name matching since QC Panel is keyed by driver names
+                # Prioritize driver name matching since QC Panel is keyed by
+                # driver names
                 src = active.get(drv) or active.get(vin)
+                
+                # If no direct match, try fuzzy matching for driver names
+                if not src and drv:
+                    for qc_driver_name, load_data in active.items():
+                        if self._fuzzy_match_driver(qc_driver_name, drv):
+                            src = load_data
+                            logger.debug(f"Fuzzy matched: QC '{qc_driver_name}' <-> Assets '{drv}'")
+                            break
+                
                 if not src:
                     continue
 
                 def rng(ci):
                     return f"{self.col_to_a1(ci)}{i}"
 
-                if c["Load"]:     updates.append({"range": rng(c["Load"]),     "values": [[src["load_id"]]]})
-                if c["PU_ADDR"]:  updates.append({"range": rng(c["PU_ADDR"]),  "values": [[src["pu_address"]]]})
-                if c["PU_APPT"]:  updates.append({"range": rng(c["PU_APPT"]),  "values": [[src["pu_appt"]]]})
-                if c["DEL_ADDR"]: updates.append({"range": rng(c["DEL_ADDR"]), "values": [[src["del_address"]]]})
-                if c["DEL_APPT"]: updates.append({"range": rng(c["DEL_APPT"]), "values": [[src["del_appt"]]]})
+                if c["Load"]:
+                    updates.append(
+                        {"range": rng(c["Load"]), "values": [[src["load_id"]]]})
+                if c["PU_ADDR"]:
+                    updates.append(
+                        {"range": rng(c["PU_ADDR"]), "values": [[src["pu_address"]]]})
+                if c["PU_APPT"]:
+                    updates.append(
+                        {"range": rng(c["PU_APPT"]), "values": [[src["pu_appt"]]]})
+                if c["DEL_ADDR"]:
+                    updates.append(
+                        {"range": rng(c["DEL_ADDR"]), "values": [[src["del_address"]]]})
+                if c["DEL_APPT"]:
+                    updates.append(
+                        {"range": rng(c["DEL_APPT"]), "values": [[src["del_appt"]]]})
 
             if updates:
                 ws.batch_update(updates)
-                logger.info(f"Synced {len(updates)} load data updates to assets sheet")
+                logger.info(
+                    f"Synced {len(updates)} load data updates to assets sheet")
 
             return len(updates)
         except Exception as e:
             logger.error(f"Error syncing active loads to assets: {e}")
             return 0
 
-    def _ensure_assets_columns(self, current_headers: List[str], missing_cols: List[str]):
+    def _ensure_assets_columns(
+            self,
+            current_headers: List[str],
+            missing_cols: List[str]):
         """Ensure required columns exist in assets worksheet"""
         try:
             col_mapping = {
@@ -607,7 +837,8 @@ class GoogleSheetsIntegration:
 
             # Update header row
             self.assets_worksheet.update('1:1', [new_headers])
-            logger.info(f"Added missing columns to assets sheet: {[col_mapping.get(c, c) for c in missing_cols]}")
+            logger.info(
+                f"Added missing columns to assets sheet: {[col_mapping.get(c, c) for c in missing_cols]}")
         except Exception as e:
             logger.error(f"Error adding columns to assets sheet: {e}")
 
@@ -622,7 +853,8 @@ class GoogleSheetsIntegration:
             if mgmt:
                 # Handle both single ID and comma-separated list
                 if isinstance(mgmt, str) and ',' in mgmt:
-                    mgmt_ids = [int(x.strip()) for x in mgmt.split(',') if x.strip()]
+                    mgmt_ids = [int(x.strip())
+                                for x in mgmt.split(',') if x.strip()]
                     chat_ids.extend(mgmt_ids)
                 elif mgmt:
                     try:
@@ -650,8 +882,8 @@ class GoogleSheetsIntegration:
             group_ids = []
 
             for record in records:
-                if (record.get('vin', '').upper().strip() == vin.upper().strip() and
-                    record.get('status', '').upper() == 'ACTIVE'):
+                if (record.get('vin', '').upper().strip() == vin.upper(
+                ).strip() and record.get('status', '').upper() == 'ACTIVE'):
                     group_id = record.get('group_id')
                     if group_id:
                         try:
@@ -671,14 +903,15 @@ class GoogleSheetsIntegration:
     def get_all_driver_names(self) -> List[str]:
         """Get all driver names from assets worksheet with enhanced caching"""
         try:
-            # Enhanced cache duration - 10 minutes for driver names as they don't change frequently
+            # Enhanced cache duration - 10 minutes for driver names as they
+            # don't change frequently
             enhanced_cache_duration = timedelta(minutes=10)
-            
+
             # Use cache if available and fresh
-            if (self.last_fetch_time and
-                datetime.now() - self.last_fetch_time < enhanced_cache_duration and
-                self.cached_driver_names):
-                logger.debug(f"Using cached driver names ({len(self.cached_driver_names)} entries)")
+            if (self.last_fetch_time and datetime.now() - self.last_fetch_time <
+                    enhanced_cache_duration and self.cached_driver_names):
+                logger.debug(
+                    f"Using cached driver names ({len(self.cached_driver_names)} entries)")
                 return self.cached_driver_names
 
             # Get all records from assets worksheet - use safe method
@@ -694,7 +927,7 @@ class GoogleSheetsIntegration:
                 else:
                     # Fallback to header-based access
                     driver_name = record.get('driver_name', '')
-                
+
                 driver_name = str(driver_name).strip()
 
                 # Skip empty or obviously invalid names
@@ -702,7 +935,7 @@ class GoogleSheetsIntegration:
                     driver_name not in seen_names and
                     driver_name.lower() != 'driver name' and  # Skip header
                     len(driver_name) > 2 and  # Skip too short names
-                    not driver_name.startswith('#')):  # Skip error values
+                        not driver_name.startswith('#')):  # Skip error values
 
                     driver_names.append(driver_name)
                     seen_names.add(driver_name)
@@ -711,7 +944,8 @@ class GoogleSheetsIntegration:
             self.cached_driver_names = driver_names
             self.last_fetch_time = datetime.now()
 
-            logger.info(f"Loaded {len(driver_names)} driver names from assets worksheet")
+            logger.info(
+                f"Loaded {len(driver_names)} driver names from assets worksheet")
             return driver_names
 
         except Exception as e:
@@ -723,22 +957,25 @@ class GoogleSheetsIntegration:
         try:
             # Use the improved DriverNameMatcher
             from driver_name_matcher import DriverNameMatcher
-            
+
             # Create matcher instance (it will build its own cache)
             matcher = DriverNameMatcher(self)
-            
+
             # Use the improved matching logic
             vin = matcher.find_vin_for_driver(driver_name)
-            
+
             if vin:
-                logger.info(f"Driver match found: '{driver_name}' -> VIN: {vin}")
+                logger.info(
+                    f"Driver match found: '{driver_name}' -> VIN: {vin}")
                 return vin.upper()
             else:
-                logger.warning(f"No match found for driver name: '{driver_name}'")
+                logger.warning(
+                    f"No match found for driver name: '{driver_name}'")
                 return None
 
         except Exception as e:
-            logger.error(f"Error finding VIN by driver name '{driver_name}': {e}")
+            logger.error(
+                f"Error finding VIN by driver name '{driver_name}': {e}")
             return None
 
     def find_similar_driver_names(self, search_name: str) -> List[str]:
@@ -746,28 +983,29 @@ class GoogleSheetsIntegration:
         try:
             # Use the improved DriverNameMatcher
             from driver_name_matcher import DriverNameMatcher
-            
+
             # Create matcher instance
             matcher = DriverNameMatcher(self)
-            
+
             # Get all driver names from the cache
             all_driver_names = list(matcher.driver_vin_cache.keys())
-            
+
             # Filter out partial names (keep only full names for suggestions)
             full_names = []
             for name in all_driver_names:
-                # Skip partial names (single words that are likely first/last names)
+                # Skip partial names (single words that are likely first/last
+                # names)
                 if len(name.split()) >= 2:
                     full_names.append(name)
-            
+
             # Use fuzzy matching to find similar names
             from fuzzywuzzy import process
-            
+
             if full_names:
                 # Find top 10 matches
                 matches = process.extract(
-                    search_name, 
-                    full_names, 
+                    search_name,
+                    full_names,
                     limit=10,
                     scorer=lambda s1, s2: max(
                         # Try different scoring methods
@@ -776,64 +1014,73 @@ class GoogleSheetsIntegration:
                         process.fuzz.token_sort_ratio(s1.lower(), s2.lower())
                     )
                 )
-                
+
                 # Filter by minimum confidence and return names
                 suggestions = []
                 for name, score in matches:
                     if score >= 60:  # Minimum 60% confidence
                         suggestions.append(name)
-                
-                logger.info(f"Found {len(suggestions)} similar names for '{search_name}': {suggestions[:5]}")
+
+                logger.info(
+                    f"Found {len(suggestions)} similar names for '{search_name}': {suggestions[:5]}")
                 return suggestions[:10]  # Return top 10
-            
+
             return []
 
         except Exception as e:
-            logger.error(f"Error finding similar driver names for '{search_name}': {e}")
+            logger.error(
+                f"Error finding similar driver names for '{search_name}': {e}")
             return []
 
-    def get_driver_contact_info_by_vin(self, vin: str) -> Tuple[Optional[str], Optional[str]]:
+    def get_driver_contact_info_by_vin(
+            self, vin: str) -> Tuple[Optional[str], Optional[str]]:
         """Get driver name and phone by VIN - HARDCODED column indices for reliability"""
         try:
             # HARDCODED COLUMN INDICES (to prevent future confusion):
             # Column 4 (index 3): Driver Name
-            # Column 5 (index 4): VIN  
+            # Column 5 (index 4): VIN
             # Column 12 (index 11): Phone
             DRIVER_NAME_COL = 3
             VIN_COL = 4
             PHONE_COL = 11
-            
+
             # Get raw data directly from worksheet
             assets_worksheet = self.assets_worksheet
             all_data = assets_worksheet.get_all_values()
-            
+
             if len(all_data) < 2:
                 return None, None
-                
+
             vin_upper = vin.upper().strip()
-            
+
             # Skip header row, search data rows
             for row_data in all_data[1:]:
                 if len(row_data) > max(DRIVER_NAME_COL, VIN_COL, PHONE_COL):
                     # Check VIN match using hardcoded column index
-                    row_vin = str(row_data[VIN_COL]).upper().strip() if len(row_data) > VIN_COL else ''
-                    
+                    row_vin = str(row_data[VIN_COL]).upper(
+                    ).strip() if len(row_data) > VIN_COL else ''
+
                     if row_vin == vin_upper:
                         # Get driver name using hardcoded column index
-                        driver_name = str(row_data[DRIVER_NAME_COL]).strip() if len(row_data) > DRIVER_NAME_COL else ''
-                        
+                        driver_name = str(row_data[DRIVER_NAME_COL]).strip() if len(
+                            row_data) > DRIVER_NAME_COL else ''
+
                         # Handle multiple driver names (data quality fix)
                         if driver_name and ' / ' in driver_name:
-                            # Take the first driver name when multiple names are present
+                            # Take the first driver name when multiple names
+                            # are present
                             driver_name = driver_name.split(' / ')[0].strip()
-                            logger.debug(f"Multiple drivers found for VIN {vin}, using first: '{driver_name}'")
-                        
+                            logger.debug(
+                                f"Multiple drivers found for VIN {vin}, using first: '{driver_name}'")
+
                         # Get phone using hardcoded column index
-                        phone = str(row_data[PHONE_COL]).strip() if len(row_data) > PHONE_COL else ''
-                        
-                        logger.debug(f"Contact info for VIN {vin}: Driver: '{driver_name}', Phone: '{phone}'")
+                        phone = str(row_data[PHONE_COL]).strip() if len(
+                            row_data) > PHONE_COL else ''
+
+                        logger.debug(
+                            f"Contact info for VIN {vin}: Driver: '{driver_name}', Phone: '{phone}'")
                         return driver_name if driver_name else None, phone if phone else None
-            
+
             logger.debug(f"No contact info found for VIN: {vin}")
             return None, None
 
@@ -842,41 +1089,53 @@ class GoogleSheetsIntegration:
             return None, None
 
     def get_driver_name_by_vin(self, vin: str) -> Optional[str]:
-        """Get driver name by VIN - HARDCODED column indices for reliability"""
+        """Get driver name by VIN - Updated for new assets sheet structure"""
         try:
-            # HARDCODED COLUMN INDICES (to prevent future confusion):
-            # Column 4 (index 3): Driver Name
-            # Column 5 (index 4): VIN
-            DRIVER_NAME_COL = 3
-            VIN_COL = 4
-            
+            # UPDATED COLUMN INDICES for new assets sheet structure:
+            # Column 0: DRIVER FIRST NAME
+            # Column 1: DRIVER LAST NAME
+            # Column 2: VIN
+            FIRST_NAME_COL = 0
+            LAST_NAME_COL = 1
+            VIN_COL = 2
+
             # Get raw data directly from worksheet
             assets_worksheet = self.assets_worksheet
             all_data = assets_worksheet.get_all_values()
-            
+
             if len(all_data) < 2:
                 return None
-                
+
             vin_upper = vin.upper().strip()
-            
+
             # Skip header row, search data rows
             for row_data in all_data[1:]:
-                if len(row_data) > max(DRIVER_NAME_COL, VIN_COL):
-                    # Check VIN match using hardcoded column index
+                if len(row_data) > VIN_COL:
+                    # Check VIN match
                     row_vin = str(row_data[VIN_COL]).upper().strip() if len(row_data) > VIN_COL else ''
-                    
+
                     if row_vin == vin_upper:
-                        # Get driver name using hardcoded column index
-                        driver_name = str(row_data[DRIVER_NAME_COL]).strip() if len(row_data) > DRIVER_NAME_COL else ''
+                        # Get first and last name
+                        first_name = str(row_data[FIRST_NAME_COL]).strip() if len(row_data) > FIRST_NAME_COL else ''
+                        last_name = str(row_data[LAST_NAME_COL]).strip() if len(row_data) > LAST_NAME_COL else ''
                         
+                        # Combine names
+                        if first_name or last_name:
+                            driver_name = f"{first_name} {last_name}".strip()
+                        else:
+                            driver_name = ''
+
                         # Handle multiple driver names (data quality fix)
                         if driver_name and ' / ' in driver_name:
-                            # Take the first driver name when multiple names are present
+                            # Take the first driver name when multiple names
+                            # are present
                             driver_name = driver_name.split(' / ')[0].strip()
-                            logger.debug(f"Multiple drivers found for VIN {vin}, using first: '{driver_name}'")
-                        
+                            logger.debug(
+                                f"Multiple drivers found for VIN {vin}, using first: '{driver_name}'")
+
                         if driver_name:
-                            logger.debug(f"Driver name for VIN {vin}: '{driver_name}'")
+                            logger.debug(
+                                f"Driver name for VIN {vin}: '{driver_name}'")
                             return driver_name
 
             logger.debug(f"No driver name found for VIN: {vin}")
@@ -886,7 +1145,8 @@ class GoogleSheetsIntegration:
             logger.error(f"Error getting driver name for VIN {vin}: {e}")
             return None
 
-    def get_driver_contact_info(self, driver_name: str) -> Tuple[Optional[str], Optional[str]]:
+    def get_driver_contact_info(
+            self, driver_name: str) -> Tuple[Optional[str], Optional[str]]:
         """Get driver contact info by name - FIXED to search in Driver Name column"""
         try:
             records = self._get_assets_records_safe()
@@ -894,21 +1154,27 @@ class GoogleSheetsIntegration:
 
             for record in records:
                 # Search in Driver Name column
-                sheet_driver_name = str(record.get('driver_name', '')).lower().strip()
+                sheet_driver_name = str(
+                    record.get(
+                        'driver_name',
+                        '')).lower().strip()
 
                 if sheet_driver_name == driver_name_lower:
-                    # Return the actual driver name (with proper casing) and phone
+                    # Return the actual driver name (with proper casing) and
+                    # phone
                     actual_name = str(record.get('driver_name', '')).strip()
                     phone = str(record.get('phone', '')).strip()
 
-                    logger.info(f"Contact info for driver '{driver_name}': Phone: '{phone}'")
+                    logger.info(
+                        f"Contact info for driver '{driver_name}': Phone: '{phone}'")
                     return actual_name, phone if phone else None
 
             logger.warning(f"No contact info found for driver: {driver_name}")
             return None, None
 
         except Exception as e:
-            logger.error(f"Error getting contact info for driver '{driver_name}': {e}")
+            logger.error(
+                f"Error getting contact info for driver '{driver_name}': {e}")
             return None, None
 
     # Group management functions
@@ -935,7 +1201,12 @@ class GoogleSheetsIntegration:
             logger.error(f"Error getting group VIN for {group_id}: {e}")
             return None
 
-    def save_group_vin(self, group_id: int, group_title: str, vin: str, driver_name: Optional[str] = None) -> bool:
+    def save_group_vin(
+            self,
+            group_id: int,
+            group_title: str,
+            vin: str,
+            driver_name: Optional[str] = None) -> bool:
         """Save VIN for a group to groups worksheet"""
         try:
             if not self.groups_worksheet:
@@ -957,7 +1228,8 @@ class GoogleSheetsIntegration:
             if not driver_name and vin:
                 driver_name = self.get_driver_name_by_vin(vin)
 
-            # Row data matching the actual headers: ['group_id', 'group_title', 'vin', 'status', 'last_updated', 'error_count']
+            # Row data matching the actual headers: ['group_id', 'group_title',
+            # 'vin', 'status', 'last_updated', 'error_count']
             row_data = [
                 group_id,
                 group_title,
@@ -986,11 +1258,18 @@ class GoogleSheetsIntegration:
 
     # Enhanced logging functions
 
-    def log_dashboard_event(self, event_type: str, user_id: int, chat_id: int,
-                           command: str, vin: Optional[str] = None,
-                           driver_name: Optional[str] = None, success: bool = True,
-                           error_message: Optional[str] = None, duration_ms: int = 0,
-                           session_data: Optional[str] = None) -> bool:
+    def log_dashboard_event(
+            self,
+            event_type: str,
+            user_id: int,
+            chat_id: int,
+            command: str,
+            vin: Optional[str] = None,
+            driver_name: Optional[str] = None,
+            success: bool = True,
+            error_message: Optional[str] = None,
+            duration_ms: int = 0,
+            session_data: Optional[str] = None) -> bool:
         """Log dashboard events to dashboard logs worksheet for user analytics"""
         if not self.enable_dashboard_logging or not self.dashboard_logs_worksheet:
             return False
@@ -1014,17 +1293,25 @@ class GoogleSheetsIntegration:
             ]
 
             self.dashboard_logs_worksheet.append_row(row_data)
-            logger.debug(f"Logged dashboard event: {event_type} - {command} for user {user_id}")
+            logger.debug(
+                f"Logged dashboard event: {event_type} - {command} for user {user_id}")
             return True
 
         except Exception as e:
             logger.error(f"Error logging dashboard event: {e}")
             return False
 
-    def log_command_execution(self, user_id: int, chat_id: int, command: str,
-                             success: bool = True, error_message: Optional[str] = None,
-                             vin: Optional[str] = None, driver_name: Optional[str] = None,
-                             duration_ms: int = 0, extra_info: Optional[str] = None) -> bool:
+    def log_command_execution(
+            self,
+            user_id: int,
+            chat_id: int,
+            command: str,
+            success: bool = True,
+            error_message: Optional[str] = None,
+            vin: Optional[str] = None,
+            driver_name: Optional[str] = None,
+            duration_ms: int = 0,
+            extra_info: Optional[str] = None) -> bool:
         """Convenience method for logging command executions"""
         return self.log_dashboard_event(
             event_type="COMMAND_EXECUTION",
@@ -1039,8 +1326,13 @@ class GoogleSheetsIntegration:
             session_data=extra_info
         )
 
-    def log_user_interaction(self, user_id: int, chat_id: int, interaction_type: str,
-                            details: Optional[str] = None, success: bool = True) -> bool:
+    def log_user_interaction(
+            self,
+            user_id: int,
+            chat_id: int,
+            interaction_type: str,
+            details: Optional[str] = None,
+            success: bool = True) -> bool:
         """Log user interactions like button clicks, menu selections, etc."""
         return self.log_dashboard_event(
             event_type="USER_INTERACTION",
@@ -1060,14 +1352,16 @@ class GoogleSheetsIntegration:
             return self.fleet_status_worksheet.get_all_records()
         except Exception as e:
             if "header row in the worksheet is not unique" in str(e):
-                logger.warning("Working around header duplication issue in fleet status worksheet")
+                logger.warning(
+                    "Working around header duplication issue in fleet status worksheet")
                 # Fallback to manual record creation
                 try:
                     all_data = self.fleet_status_worksheet.get_all_values()
                     if len(all_data) < 2:
                         return []
 
-                    headers = [h.strip() for h in all_data[0] if h.strip()]  # Remove empty headers
+                    # Remove empty headers
+                    headers = [h.strip() for h in all_data[0] if h.strip()]
                     data_rows = all_data[1:]
 
                     records = []
@@ -1078,7 +1372,8 @@ class GoogleSheetsIntegration:
                         record = dict(zip(headers, padded_row[:len(headers)]))
                         records.append(record)
 
-                    logger.info(f"Successfully retrieved {len(records)} fleet status records using fallback method")
+                    logger.info(
+                        f"Successfully retrieved {len(records)} fleet status records using fallback method")
                     return records
                 except Exception as fallback_e:
                     logger.error(f"Fallback method also failed: {fallback_e}")
@@ -1097,18 +1392,19 @@ class GoogleSheetsIntegration:
                 all_data = self.assets_worksheet.get_all_values()
                 if len(all_data) < 2:
                     return []
-                
+
                 data_rows = all_data[1:]  # Skip header row
                 records = []
-                
+
                 for row in data_rows:
                     # Convert row to dictionary using column mapping
                     record = self.assets_mapper.create_row_dict(row)
                     # Only include rows with valid VIN
                     if record.get('vin'):
                         records.append(record)
-                
-                logger.debug(f"Retrieved {len(records)} assets records using column mapping")
+
+                logger.debug(
+                    f"Retrieved {len(records)} assets records using column mapping")
                 return records
             else:
                 # Fallback to header-based approach
@@ -1129,14 +1425,16 @@ class GoogleSheetsIntegration:
             return self.assets_worksheet.get_all_records()
         except Exception as e:
             if "header row in the worksheet is not unique" in str(e):
-                logger.warning("Working around header duplication issue in assets worksheet")
+                logger.warning(
+                    "Working around header duplication issue in assets worksheet")
                 # Fallback to manual record creation
                 try:
                     all_data = self.assets_worksheet.get_all_values()
                     if len(all_data) < 2:
                         return []
 
-                    headers = [h.strip() for h in all_data[0] if h.strip()]  # Remove empty headers
+                    # Remove empty headers
+                    headers = [h.strip() for h in all_data[0] if h.strip()]
                     data_rows = all_data[1:]
 
                     records = []
@@ -1147,10 +1445,12 @@ class GoogleSheetsIntegration:
                         record = dict(zip(headers, padded_row[:len(headers)]))
                         records.append(record)
 
-                    logger.info(f"Successfully retrieved {len(records)} assets records using header fallback method")
+                    logger.info(
+                        f"Successfully retrieved {len(records)} assets records using header fallback method")
                     return records
                 except Exception as fallback_e:
-                    logger.error(f"Header fallback method also failed: {fallback_e}")
+                    logger.error(
+                        f"Header fallback method also failed: {fallback_e}")
                     return []
             else:
                 raise e
@@ -1164,12 +1464,15 @@ class GoogleSheetsIntegration:
             logger.error(f"Error in fleet_status update: {e}")
             return False
 
-    def update_asset_tracking_sheet(self, trucks: List[Dict[str, Any]]) -> bool:
+    def update_asset_tracking_sheet(
+            self, trucks: List[Dict[str, Any]]) -> bool:
         """DEPRECATED: Use update_fleet_status_sheet instead - this was updating fleet_status worksheet"""
-        logger.warning("update_asset_tracking_sheet is deprecated, use update_fleet_status_sheet instead")
+        logger.warning(
+            "update_asset_tracking_sheet is deprecated, use update_fleet_status_sheet instead")
         return self.update_fleet_status_sheet(trucks)
 
-    def cleanup_fleet_status_duplicates(self, dry_run: bool = True) -> Dict[str, Any]:
+    def cleanup_fleet_status_duplicates(
+            self, dry_run: bool = True) -> Dict[str, Any]:
         """
         Clean up duplicate entries in fleet_status worksheet (EMERGENCY CLEANUP)
 
@@ -1201,12 +1504,18 @@ class GoogleSheetsIntegration:
                     if vin:
                         if vin not in vin_groups:
                             vin_groups[vin] = []
-                        vin_groups[vin].append({"row_index": i + 2, "data": row})  # +2 for header and 1-based indexing
+                        # +2 for header and 1-based indexing
+                        vin_groups[vin].append(
+                            {"row_index": i + 2, "data": row})
 
             # Find duplicates
-            duplicates = {vin: entries for vin, entries in vin_groups.items() if len(entries) > 1}
+            duplicates = {vin: entries for vin,
+                          entries in vin_groups.items() if len(entries) > 1}
             total_rows = len(data_rows)
-            duplicate_count = sum(len(entries) - 1 for entries in duplicates.values())  # Keep latest, remove others
+            # Keep latest, remove others
+            duplicate_count = sum(
+                len(entries) -
+                1 for entries in duplicates.values())
 
             cleanup_stats = {
                 "total_rows": total_rows,
@@ -1220,14 +1529,18 @@ class GoogleSheetsIntegration:
             logger.info(f"Cleanup analysis: {cleanup_stats}")
 
             if not dry_run and duplicate_count > 0:
-                logger.warning("PERFORMING ACTUAL CLEANUP - This will delete duplicate rows!")
+                logger.warning(
+                    "PERFORMING ACTUAL CLEANUP - This will delete duplicate rows!")
 
-                # Sort rows to delete in reverse order (highest row numbers first)
+                # Sort rows to delete in reverse order (highest row numbers
+                # first)
                 rows_to_delete = []
                 for vin, entries in duplicates.items():
                     # Keep the latest entry (last in list), delete others
-                    entries_to_delete = sorted(entries[:-1], key=lambda x: x["row_index"], reverse=True)
-                    rows_to_delete.extend([entry["row_index"] for entry in entries_to_delete])
+                    entries_to_delete = sorted(
+                        entries[:-1], key=lambda x: x["row_index"], reverse=True)
+                    rows_to_delete.extend([entry["row_index"]
+                                          for entry in entries_to_delete])
 
                 rows_to_delete.sort(reverse=True)
 
@@ -1247,7 +1560,8 @@ class GoogleSheetsIntegration:
                         logger.error(f"Error deleting row {row_num}: {e}")
 
                 cleanup_stats["rows_deleted"] = deleted_count
-                logger.info(f"Cleanup complete: deleted {deleted_count} duplicate rows")
+                logger.info(
+                    f"Cleanup complete: deleted {deleted_count} duplicate rows")
 
             return cleanup_stats
 
@@ -1255,7 +1569,8 @@ class GoogleSheetsIntegration:
             logger.error(f"Error during fleet status cleanup: {e}")
             return {"error": str(e)}
 
-    def update_fleet_status_sheet_fixed(self, trucks: List[Dict[str, Any]]) -> bool:
+    def update_fleet_status_sheet_fixed(
+            self, trucks: List[Dict[str, Any]]) -> bool:
         """
         Update fleet_status worksheet with TMS truck data - properly handles existing rows
         without creating duplicates. Updates fleet_status not assets!
@@ -1272,9 +1587,18 @@ class GoogleSheetsIntegration:
                 if len(all_data) < 2:
                     # Use correct fleet_status headers
                     headers = [
-                        "vin", "driver_name", "last_updated", "latitude", "longitude", "address",
-                        "speed_mph", "status", "movement_status", "risk_level", "group_chat_id", "last_contact"
-                    ]
+                        "vin",
+                        "driver_name",
+                        "last_updated",
+                        "latitude",
+                        "longitude",
+                        "address",
+                        "speed_mph",
+                        "status",
+                        "movement_status",
+                        "risk_level",
+                        "group_chat_id",
+                        "last_contact"]
                     self.fleet_status_worksheet.update('A1', [headers])
                     existing_records = []
                 else:
@@ -1285,7 +1609,8 @@ class GoogleSheetsIntegration:
                 for i, row in enumerate(existing_records):
                     if len(row) > 0 and row[0]:
                         vin = str(row[0]).strip().upper()
-                        existing_vins[vin] = i + 2  # +2 for header and 1-based indexing
+                        # +2 for header and 1-based indexing
+                        existing_vins[vin] = i + 2
 
             except Exception as e:
                 logger.error(f"Error reading existing data: {e}")
@@ -1315,9 +1640,11 @@ class GoogleSheetsIntegration:
                     truck.get('address', ''),                   # address
                     truck.get('speed', 0),                      # speed_mph
                     truck.get('status', ''),                    # status
-                    'MOVING' if truck.get('speed', 0) > 2 else 'STOPPED',  # movement_status
+                    'MOVING' if truck.get(
+                        'speed', 0) > 2 else 'STOPPED',  # movement_status
                     'NORMAL',                                   # risk_level
-                    '',                                         # group_chat_id (filled when group registers)
+                    # group_chat_id (filled when group registers)
+                    '',
                     current_time                                # last_contact
                 ]
 
@@ -1325,13 +1652,15 @@ class GoogleSheetsIntegration:
                     # UPDATE existing row - use batch updates for efficiency
                     row_num = existing_vins[vin]
                     batch_updates.append({
-                        'range': f'A{row_num}:L{row_num}',  # A to L = 12 columns for fleet_status
+                        # A to L = 12 columns for fleet_status
+                        'range': f'A{row_num}:L{row_num}',
                         'values': [row_data]
                     })
                     updates_made += 1
                 else:
                     # DO NOT add new rows due to 10M cell limit
-                    logger.debug(f"Skipping new VIN {vin} - only updating existing records due to cell limit")
+                    logger.debug(
+                        f"Skipping new VIN {vin} - only updating existing records due to cell limit")
 
                 # Limit updates to prevent overload
                 if updates_made >= 50:  # Process max 50 trucks per run
@@ -1341,7 +1670,8 @@ class GoogleSheetsIntegration:
             if batch_updates:
                 try:
                     self.fleet_status_worksheet.batch_update(batch_updates)
-                    logger.info(f"Batch updated {len(batch_updates)} existing records")
+                    logger.info(
+                        f"Batch updated {len(batch_updates)} existing records")
                 except Exception as e:
                     logger.error(f"Batch update failed: {e}")
                     # Fall back to individual updates
@@ -1349,9 +1679,11 @@ class GoogleSheetsIntegration:
                         try:
                             range_name = update['range']
                             values = update['values']
-                            self.fleet_status_worksheet.update(range_name, values)
+                            self.fleet_status_worksheet.update(
+                                range_name, values)
                         except Exception as individual_e:
-                            logger.error(f"Individual update failed for {range_name}: {individual_e}")
+                            logger.error(
+                                f"Individual update failed for {range_name}: {individual_e}")
 
             logger.info(f"Updated {updates_made} fleet_status records")
             return True
@@ -1360,7 +1692,8 @@ class GoogleSheetsIntegration:
             logger.error(f"Error in fleet_status sheet update: {e}")
             return False
 
-    def update_assets_with_current_data(self, limit: int = None) -> Dict[str, Any]:
+    def update_assets_with_current_data(
+            self, limit: int = None) -> Dict[str, Any]:
         """
         Manual command to update assets worksheet with current TMS truck data
 
@@ -1394,27 +1727,30 @@ class GoogleSheetsIntegration:
                 trucks = trucks[:limit]
                 logger.info(f"Limited to {limit} trucks for this run")
 
-            # Get existing assets records directly from worksheet to avoid column mapping issues
+            # Get existing assets records directly from worksheet to avoid
+            # column mapping issues
             try:
                 all_values = self.assets_worksheet.get_all_values()
                 if len(all_values) < 2:
                     return {"error": "Assets sheet has no data rows"}
-                
+
                 headers = all_values[0]
-                
+
                 # Find VIN column index
                 vin_col_idx = None
                 for i, header in enumerate(headers):
                     if 'vin' in header.lower():
                         vin_col_idx = i
                         break
-                
+
                 if vin_col_idx is None:
-                    return {"error": "Could not find VIN column in assets sheet"}
-                
+                    return {
+                        "error": "Could not find VIN column in assets sheet"}
+
                 # Build existing records with proper VIN mapping
                 existing_records = []
-                for i, row in enumerate(all_values[1:], 2):  # Skip header, start from row 2
+                for i, row in enumerate(
+                        all_values[1:], 2):  # Skip header, start from row 2
                     if len(row) > vin_col_idx:
                         vin = str(row[vin_col_idx]).strip()
                         if vin and len(vin) >= 10:  # Valid VIN
@@ -1424,19 +1760,27 @@ class GoogleSheetsIntegration:
                                 if j < len(row):
                                     record[header] = row[j]
                             existing_records.append(record)
-                
-                logger.info(f"Loaded {len(existing_records)} existing records from assets sheet")
-                
+
+                logger.info(
+                    f"Loaded {len(existing_records)} existing records from assets sheet")
+
             except Exception as e:
                 logger.error(f"Error loading existing records: {e}")
                 return {"error": f"Failed to load existing records: {e}"}
 
-            # Use robust writer with safety flag to prevent automatic VIN addition
-            writer = RobustSheetsWriter(self.assets_worksheet, chunk_size=200, allow_new_trucks=False)
-            return writer.write_tms_data_to_assets(trucks, existing_records, headers)
+            # Use robust writer with safety flag to prevent automatic VIN
+            # addition
+            writer = RobustSheetsWriter(
+                self.assets_worksheet,
+                chunk_size=200,
+                allow_new_trucks=False)
+            return writer.write_tms_data_to_assets(
+                trucks, existing_records, headers)
 
         except Exception as e:
-            logger.error(f"Error updating assets with current data: {e}", exc_info=True)
+            logger.error(
+                f"Error updating assets with current data: {e}",
+                exc_info=True)
             return {"error": f"Update failed: {e}"}
 
     def debug_worksheet_columns(self) -> Dict[str, Any]:
@@ -1444,7 +1788,8 @@ class GoogleSheetsIntegration:
         try:
             # Get first few rows to see structure
             header_row = self.assets_worksheet.row_values(1)
-            sample_rows = self.assets_worksheet.get_all_values()[:3]  # Header + 2 data rows
+            sample_rows = self.assets_worksheet.get_all_values()[
+                :3]  # Header + 2 data rows
 
             # Get all records to see field names - use safe method
             records = self._get_assets_records_safe()
@@ -1453,10 +1798,10 @@ class GoogleSheetsIntegration:
             debug_info = {
                 "header_row": header_row,
                 "sample_rows": sample_rows,
-                "available_fields": list(sample_record.keys()) if sample_record else [],
+                "available_fields": list(
+                    sample_record.keys()) if sample_record else [],
                 "sample_record": sample_record,
-                "total_records": len(records)
-            }
+                "total_records": len(records)}
 
             logger.info("=== WORKSHEET DEBUG INFO ===")
             logger.info(f"Header row: {header_row}")
@@ -1470,7 +1815,8 @@ class GoogleSheetsIntegration:
             logger.error(f"Error debugging worksheet structure: {e}")
             return {"error": str(e)}
 
-    def add_new_truck_to_assets(self, vin: str, driver_name: str = None) -> Dict[str, Any]:
+    def add_new_truck_to_assets(
+            self, vin: str, driver_name: str = None) -> Dict[str, Any]:
         """
         Manually add a specific truck by VIN to the assets worksheet
 
@@ -1506,14 +1852,16 @@ class GoogleSheetsIntegration:
                     break
 
             if not target_truck:
-                return {"error": f"Truck with VIN {vin_upper} not found in TMS data"}
+                return {
+                    "error": f"Truck with VIN {vin_upper} not found in TMS data"}
 
             # Check if truck already exists in assets
             existing_records = self._get_assets_records_safe()
             for record in existing_records:
                 existing_vin = str(record.get('vin', '')).strip().upper()
                 if existing_vin == vin_upper:
-                    return {"error": f"Truck with VIN {vin_upper} already exists in assets worksheet"}
+                    return {
+                        "error": f"Truck with VIN {vin_upper} already exists in assets worksheet"}
 
             # Format truck info for consistent data
             truck_info = tms.format_truck_info(target_truck)
@@ -1546,7 +1894,8 @@ class GoogleSheetsIntegration:
             # Add the new row to the worksheet
             self.assets_worksheet.append_row(new_row)
 
-            logger.info(f"Successfully added new truck VIN {vin_upper} to assets worksheet")
+            logger.info(
+                f"Successfully added new truck VIN {vin_upper} to assets worksheet")
 
             return {
                 "success": True,
@@ -1612,7 +1961,8 @@ class GoogleSheetsIntegration:
                 if len(new_trucks) >= limit:
                     break
 
-            logger.info(f"Found {len(new_trucks)} new trucks not in assets worksheet")
+            logger.info(
+                f"Found {len(new_trucks)} new trucks not in assets worksheet")
 
             return {
                 "success": True,
@@ -1639,22 +1989,27 @@ def test_google_integration(config: Config) -> bool:
         driver_names = google_integration.get_all_driver_names()
 
         if driver_names:
-            print(f"✅ Successfully loaded {len(driver_names)} driver names from Google Sheets")
+            print(
+                f"✅ Successfully loaded {len(driver_names)} driver names from Google Sheets")
 
             # Show sample driver names
             print(f"📋 Sample driver names: {driver_names[:5]}")
 
             # Test the specific VIN that was showing wrong name
             test_vin = "4V4NC9EH7PN336858"
-            driver_name, phone = google_integration.get_driver_contact_info_by_vin(test_vin)
+            driver_name, phone = google_integration.get_driver_contact_info_by_vin(
+                test_vin)
 
             if driver_name:
-                print(f"✅ Driver name for VIN {test_vin}: '{driver_name}' (Phone: {phone})")
+                print(
+                    f"✅ Driver name for VIN {test_vin}: '{driver_name}' (Phone: {phone})")
 
                 # Test reverse lookup
-                found_vin = google_integration.find_vin_by_driver_name(driver_name)
+                found_vin = google_integration.find_vin_by_driver_name(
+                    driver_name)
                 if found_vin:
-                    print(f"✅ Reverse lookup successful: '{driver_name}' -> VIN: {found_vin}")
+                    print(
+                        f"✅ Reverse lookup successful: '{driver_name}' -> VIN: {found_vin}")
                 else:
                     print(f"⚠️ Reverse lookup failed for: '{driver_name}'")
             else:
@@ -1664,27 +2019,31 @@ def test_google_integration(config: Config) -> bool:
             if config.QC_PANEL_SPREADSHEET_ID:
                 print(f"🔄 Testing QC Panel sync...")
                 active_loads = google_integration.get_active_load_map()
-                print(f"✅ Found {len(active_loads)} active loads from QC Panel")
+                print(
+                    f"✅ Found {len(active_loads)} active loads from QC Panel")
 
                 # Test sync to assets
                 updates = google_integration.sync_active_loads_to_assets()
                 print(f"✅ Synced {updates} load updates to assets sheet")
 
-                # Test VIN lookup
+                # Test driver lookup
                 if active_loads:
-                    sample_vin = list(active_loads.keys())[0]
-                    load_status = google_integration.get_active_load_status_for_vin(sample_vin)
+                    sample_driver = list(active_loads.keys())[0]
+                    load_status = google_integration.get_active_load_status_for_driver(
+                        sample_driver)
                     if load_status:
-                        print(f"✅ Load status lookup: VIN {sample_vin} -> {load_status.get('load_id', 'N/A')}")
+                        print(
+                            f"✅ Load status lookup: Driver {sample_driver} -> {load_status.get('load_id', 'N/A')}")
             else:
                 print(f"⚠️ QC Panel not configured, skipping sync tests")
 
             # Test worksheet structure
             debug_info = google_integration.debug_worksheet_columns()
-            if 'Driver Name' in debug_info.get('available_fields', []):
-                print(f"✅ 'Driver Name' column found in worksheet")
+            if 'driver_name' in debug_info.get('available_fields', []):
+                print(f"✅ 'driver_name' column found in worksheet")
             else:
-                print(f"❌ 'Driver Name' column not found. Available fields: {debug_info.get('available_fields', [])}")
+                print(
+                    f"❌ 'driver_name' column not found. Available fields: {debug_info.get('available_fields', [])}")
 
             print("✅ Google Sheets integration test completed successfully")
             return True
@@ -1708,8 +2067,12 @@ def test_google_integration(config: Config) -> bool:
             logger.error("Sheets model not initialized")
             return 0
 
-    async def register_or_update_group(self, group_id: int, title: str, vin: str,
-                                     owner_user_id: Optional[int] = None) -> None:
+    async def register_or_update_group(
+            self,
+            group_id: int,
+            title: str,
+            vin: str,
+            owner_user_id: Optional[int] = None) -> None:
         """Interface to sheets model for group registration"""
         if self.sheets_model:
             await self.sheets_model.register_or_update_group(group_id, title, vin, owner_user_id)
@@ -1770,10 +2133,11 @@ def test_google_integration(config: Config) -> bool:
             return 0
 
     def log_severe_error(self, component: str, severity: str, summary: str,
-                        detail: str = "", context: str = "") -> None:
+                         detail: str = "", context: str = "") -> None:
         """Interface to sheets model for severe error logging"""
         if self.sheets_model:
-            self.sheets_model.log_severe_error(component, severity, summary, detail, context)
+            self.sheets_model.log_severe_error(
+                component, severity, summary, detail, context)
         else:
             logger.error("Sheets model not initialized")
 
@@ -1788,31 +2152,39 @@ def test_google_integration(config: Config) -> bool:
     # =====================================================
     # RATE LIMITING AND MONITORING METHODS
     # =====================================================
-    
+
     def get_rate_limiting_stats(self) -> Dict[str, Any]:
         """Get rate limiting and caching statistics"""
         if not self.rate_limiter:
             return {"error": "Rate limiting not enabled"}
-        
+
         stats = self.rate_limiter.get_cache_stats()
-        
+
         # Add additional stats
-        stats.update({
-            'driver_names_cache_size': len(self.cached_driver_names),
-            'driver_names_cache_age': (datetime.now() - self.last_fetch_time).total_seconds() 
-                                    if self.last_fetch_time else None,
-            'active_loads_cache_size': len(self._active_cache) if hasattr(self, '_active_cache') else 0,
-            'active_loads_cache_age': (datetime.utcnow() - self._active_cache_ts).total_seconds() 
-                                    if hasattr(self, '_active_cache_ts') and self._active_cache_ts else None,
-            'rate_limiting_enabled': True
-        })
-        
+        stats.update(
+            {
+                'driver_names_cache_size': len(
+                    self.cached_driver_names),
+                'driver_names_cache_age': (
+                    datetime.now() -
+                    self.last_fetch_time).total_seconds() if self.last_fetch_time else None,
+                'active_loads_cache_size': len(
+                    self._active_cache) if hasattr(
+                        self,
+                        '_active_cache') else 0,
+                'active_loads_cache_age': (
+                    datetime.utcnow() -
+                    self._active_cache_ts).total_seconds() if hasattr(
+                    self,
+                    '_active_cache_ts') and self._active_cache_ts else None,
+                'rate_limiting_enabled': True})
+
         return stats
-    
+
     def force_cache_refresh(self) -> Dict[str, Any]:
         """Force refresh of all caches"""
         results = {}
-        
+
         try:
             # Refresh driver names cache
             logger.info("Forcing driver names cache refresh...")
@@ -1828,7 +2200,7 @@ def test_google_integration(config: Config) -> bool:
                 'success': False,
                 'error': str(e)
             }
-        
+
         try:
             # Refresh active loads cache
             logger.info("Forcing active loads cache refresh...")
@@ -1844,7 +2216,7 @@ def test_google_integration(config: Config) -> bool:
                 'success': False,
                 'error': str(e)
             }
-        
+
         # Clean up rate limiter cache if available
         if self.rate_limiter:
             try:
@@ -1858,5 +2230,153 @@ def test_google_integration(config: Config) -> bool:
                     'success': False,
                     'error': str(e)
                 }
-        
+
         return results
+
+    def import_excel_assets(self, excel_file_path: str) -> Dict[str, Any]:
+        """Import vehicle data from Excel file and update assets sheet"""
+        try:
+            import pandas as pd
+            
+            logger.info(f"Importing Excel data from: {excel_file_path}")
+            
+            # Read Excel file
+            df = pd.read_excel(excel_file_path)
+            logger.info(f"Loaded {len(df)} vehicles from Excel")
+            
+            # Get current assets data
+            all_values = self.assets_worksheet.get_all_values()
+            if len(all_values) < 2:
+                return {"error": "Assets sheet is empty or has no data"}
+            
+            headers = all_values[0]
+            current_data = all_values[1:]
+            
+            # Find column indices
+            col_indices = {}
+            for i, header in enumerate(headers):
+                header_lower = header.lower()
+                if 'vin' in header_lower:
+                    col_indices['vin'] = i
+                elif 'driver first' in header_lower:
+                    col_indices['driver_first'] = i
+                elif 'driver last' in header_lower:
+                    col_indices['driver_last'] = i
+                elif 'truck number' in header_lower or 'equipment name' in header_lower:
+                    col_indices['equipment'] = i
+                elif 'license' in header_lower:
+                    col_indices['license'] = i
+                elif 'make' in header_lower:
+                    col_indices['make'] = i
+                elif 'model' in header_lower:
+                    col_indices['model'] = i
+                elif 'year' in header_lower:
+                    col_indices['year'] = i
+            
+            if 'vin' not in col_indices:
+                return {"error": "Could not find VIN column in assets sheet"}
+            
+            # Create VIN lookup for existing data
+            existing_vins = {}
+            for i, row in enumerate(current_data):
+                if len(row) > col_indices['vin'] and row[col_indices['vin']]:
+                    vin = str(row[col_indices['vin']]).strip().upper()
+                    existing_vins[vin] = i
+            
+            # Process Excel data
+            updates_made = 0
+            new_rows = []
+            
+            for _, excel_row in df.iterrows():
+                vin = str(excel_row.get('Vin', '')).strip().upper()
+                if not vin or pd.isna(vin):
+                    continue
+                
+                # Parse driver name
+                current_driver = excel_row.get('Current Driver', '')
+                if pd.isna(current_driver):
+                    current_driver = ''
+                
+                driver_parts = str(current_driver).strip().split() if current_driver else []
+                first_name = driver_parts[0] if len(driver_parts) > 0 else ''
+                last_name = ' '.join(driver_parts[1:]) if len(driver_parts) > 1 else ''
+                
+                # Get other data
+                equipment_name = str(excel_row.get('Name', ''))
+                license_plate = str(excel_row.get('License Plate', ''))
+                make = str(excel_row.get('Make', ''))
+                model = str(excel_row.get('Model', ''))
+                year = str(excel_row.get('Year', ''))
+                
+                if vin in existing_vins:
+                    # Update existing row
+                    row_idx = existing_vins[vin]
+                    current_row = current_data[row_idx]
+                    
+                    # Extend row if needed
+                    max_col = max(col_indices.values())
+                    while len(current_row) <= max_col:
+                        current_row.append('')
+                    
+                    # Update fields
+                    changed = False
+                    updates = [
+                        ('driver_first', first_name),
+                        ('driver_last', last_name),
+                        ('equipment', equipment_name),
+                        ('license', license_plate),
+                        ('make', make),
+                        ('model', model),
+                        ('year', year)
+                    ]
+                    
+                    for field, value in updates:
+                        if field in col_indices and current_row[col_indices[field]] != value:
+                            current_row[col_indices[field]] = value
+                            changed = True
+                    
+                    if changed:
+                        updates_made += 1
+                        logger.info(f"Updated {vin} - {first_name} {last_name}")
+                
+                else:
+                    # Create new row
+                    new_row = [''] * len(headers)
+                    new_row[col_indices['vin']] = vin
+                    
+                    if 'driver_first' in col_indices:
+                        new_row[col_indices['driver_first']] = first_name
+                    if 'driver_last' in col_indices:
+                        new_row[col_indices['driver_last']] = last_name
+                    if 'equipment' in col_indices:
+                        new_row[col_indices['equipment']] = equipment_name
+                    if 'license' in col_indices:
+                        new_row[col_indices['license']] = license_plate
+                    if 'make' in col_indices:
+                        new_row[col_indices['make']] = make
+                    if 'model' in col_indices:
+                        new_row[col_indices['model']] = model
+                    if 'year' in col_indices:
+                        new_row[col_indices['year']] = year
+                    
+                    new_rows.append(new_row)
+                    logger.info(f"New vehicle {vin} - {first_name} {last_name}")
+            
+            # Combine all data and update sheet
+            all_data = [headers] + current_data + new_rows
+            
+            self.assets_worksheet.clear()
+            self.assets_worksheet.update('A1', all_data)
+            
+            logger.info(f"Assets sheet updated - Updated: {updates_made}, New: {len(new_rows)}")
+            
+            return {
+                "success": True,
+                "updated_existing": updates_made,
+                "new_vehicles": len(new_rows),
+                "total_rows": len(all_data) - 1
+            }
+            
+        except Exception as e:
+            logger.error(f"Error importing Excel assets: {e}")
+            return {"error": str(e)}

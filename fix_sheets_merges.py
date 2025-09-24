@@ -4,11 +4,14 @@ Merge Detection and Cleanup Script for Assets Sheet
 Detects merged cells, removes them, and performs health check write
 """
 
-import os, base64, json
+import os
+import base64
+import json
 import gspread
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from config import Config
+
 
 def creds_from_env():
     """Load credentials from environment or service account file"""
@@ -21,14 +24,17 @@ def creds_from_env():
             return Credentials.from_service_account_info(info, scopes=scopes)
         except Exception as e:
             print(f"Failed to load base64 credentials: {e}")
-    
+
     # Fallback to service account file in credentials/
     credentials_file = "credentials/data-warehouse-452216-cb7ee86d19ea.json"
     if os.path.exists(credentials_file):
         scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-        return Credentials.from_service_account_file(credentials_file, scopes=scopes)
-    
-    raise RuntimeError("No valid Google credentials found. Set GOOGLE_SA_JSON_B64 or provide service account file in credentials/")
+        return Credentials.from_service_account_file(
+            credentials_file, scopes=scopes)
+
+    raise RuntimeError(
+        "No valid Google credentials found. Set GOOGLE_SA_JSON_B64 or provide service account file in credentials/")
+
 
 def main():
     # Load config
@@ -72,10 +78,14 @@ def main():
         for i, m in enumerate(merges[:10]):  # Show first 10
             start_row = m.get("startRowIndex", 0) + 1  # Convert to 1-based
             end_row = m.get("endRowIndex", start_row)
-            start_col = chr(65 + m.get("startColumnIndex", 0))  # Convert to A, B, C
+            start_col = chr(
+                65 +
+                m.get(
+                    "startColumnIndex",
+                    0))  # Convert to A, B, C
             end_col = chr(65 + m.get("endColumnIndex", start_col))
             print(f"  {i+1}. {start_col}{start_row}:{end_col}{end_row}")
-        
+
         if len(merges) > 10:
             print(f"  ... and {len(merges) - 10} more")
 
@@ -116,17 +126,19 @@ def main():
     # Check current sheet size and data extent
     try:
         all_values = ws.get_all_values()
-        data_rows = len([row for row in all_values if any(cell.strip() for cell in row)])
+        data_rows = len(
+            [row for row in all_values if any(cell.strip() for cell in row)])
         sheet_rows = ws.row_count
         sheet_cols = ws.col_count
-        
+
         print(f"📊 Sheet dimensions: {sheet_rows} rows x {sheet_cols} cols")
         print(f"📊 Data extent: {data_rows} rows with content")
-        
+
         if data_rows > 0:
             headers = all_values[0] if all_values else []
-            print(f"📋 Headers ({len(headers)}): {headers[:8]}{'...' if len(headers) > 8 else ''}")
-        
+            print(
+                f"📋 Headers ({len(headers)}): {headers[:8]}{'...' if len(headers) > 8 else ''}")
+
     except Exception as e:
         print(f"⚠️ Could not check sheet dimensions: {e}")
 
@@ -135,8 +147,9 @@ def main():
     print("   1. The assets sheet is now ready for dynamic writes")
     print("   2. Restart the bot to use the fixed sheets writer")
     print("   3. Monitor logs for successful TMS → assets updates every 8 minutes")
-    
+
     return True
+
 
 if __name__ == "__main__":
     try:

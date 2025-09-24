@@ -1,6 +1,12 @@
 # === helper_decode_sa.py ===
-# Use this snippet in your startup code to materialize the Google SA JSON from the env var.
-import base64, json, os, tempfile, pathlib
+# Use this snippet in your startup code to materialize the Google SA JSON
+# from the env var.
+import base64
+import json
+import os
+import tempfile
+import pathlib
+
 
 def write_sa_json_from_env(env_var="GOOGLE_SA_JSON_B64") -> str:
     b64 = os.getenv(env_var, "").strip()
@@ -10,11 +16,15 @@ def write_sa_json_from_env(env_var="GOOGLE_SA_JSON_B64") -> str:
     # validate json
     obj = json.loads(data)
     # write to a secure temp file
-    tmp = tempfile.NamedTemporaryFile(prefix="sa_", suffix=".json", delete=False)
-    tmp.write(data); tmp.flush(); tmp.close()
+    tmp = tempfile.NamedTemporaryFile(
+        prefix="sa_", suffix=".json", delete=False)
+    tmp.write(data)
+    tmp.flush()
+    tmp.close()
     # set a pointer env var used by google-auth libs
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = tmp.name
     return tmp.name
+
 
 if __name__ == "__main__":
     path = write_sa_json_from_env()

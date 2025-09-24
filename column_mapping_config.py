@@ -11,13 +11,15 @@ from enum import Enum
 
 logger = logging.getLogger(__name__)
 
+
 class WorksheetType(Enum):
     """Supported worksheet types"""
     ASSETS = "assets"
-    GROUPS = "groups" 
+    GROUPS = "groups"
     FLEET_STATUS = "fleet_status"
     ELD_TRACKER = "ELD_tracker"
     QC_PANEL = "qc_panel"
+
 
 @dataclass
 class ColumnMapping:
@@ -31,19 +33,21 @@ class ColumnMapping:
     validation_regex: Optional[str] = None
     description: str = ""
 
+
 class ColumnMappingManager:
     """
     Manages column mappings for all worksheets using A,B,C notation
     This eliminates issues with header name variations and provides consistent access
     """
-    
+
     def __init__(self, config=None):
         self.config = config
         self.mappings = self._initialize_mappings_from_config()
-    
-    def _initialize_mappings_from_config(self) -> Dict[WorksheetType, Dict[str, ColumnMapping]]:
+
+    def _initialize_mappings_from_config(
+            self) -> Dict[WorksheetType, Dict[str, ColumnMapping]]:
         """Initialize column mappings from config or use defaults"""
-        
+
         # Get column positions from config or use defaults
         if self.config:
             driver_col = getattr(self.config, 'ASSETS_DRIVER_NAME_COL', 'D')
@@ -60,15 +64,21 @@ class ColumnMappingManager:
             latitude_col = 'G'
             longitude_col = 'H'
             phone_col = 'L'
-        
+
         return self._create_mappings_with_positions(
-            driver_col, vin_col, location_col, latitude_col, longitude_col, phone_col
-        )
-    
-    def _create_mappings_with_positions(self, driver_col: str, vin_col: str, location_col: str, 
-                                      latitude_col: str, longitude_col: str, phone_col: str) -> Dict[WorksheetType, Dict[str, ColumnMapping]]:
+            driver_col, vin_col, location_col, latitude_col, longitude_col, phone_col)
+
+    def _create_mappings_with_positions(self,
+                                        driver_col: str,
+                                        vin_col: str,
+                                        location_col: str,
+                                        latitude_col: str,
+                                        longitude_col: str,
+                                        phone_col: str) -> Dict[WorksheetType,
+                                                                Dict[str,
+                                                                     ColumnMapping]]:
         """Initialize default column mappings for all worksheets"""
-        
+
         return {
             # ASSETS WORKSHEET - Main fleet data (configurable positions)
             WorksheetType.ASSETS: {
@@ -82,13 +92,13 @@ class ColumnMappingManager:
                 'status': ColumnMapping('I', 8, 'status', 'Status', 'string', description='Vehicle status'),
                 'update_time': ColumnMapping('J', 9, 'update_time', 'Update Time', 'datetime', description='TMS sync timestamp'),
                 'source': ColumnMapping('K', 10, 'source', 'Source', 'string', description='Data source (TMS)'),
-                'load_id': ColumnMapping('O', 14, 'load_id', 'Load id', 'string', description='Load identifier'),
-                'pu_address': ColumnMapping('P', 15, 'pu_address', 'PU Address', 'string', description='Pickup address'),
-                'del_address': ColumnMapping('Q', 16, 'del_address', 'DEL Address', 'string', description='Delivery address'),
-                'pu_appt': ColumnMapping('R', 17, 'pu_appt', 'PU appt', 'string', description='Pickup appointment'),
-                'del_appt': ColumnMapping('S', 18, 'del_appt', 'DEL appt', 'string', description='Delivery appointment'),
+                'load_id': ColumnMapping('T', 19, 'load_id', 'Load id', 'string', description='Load identifier'),
+                'pu_address': ColumnMapping('U', 20, 'pu_address', 'PU address', 'string', description='Pickup address'),
+                'pu_appt': ColumnMapping('V', 21, 'pu_appt', 'PU appt', 'string', description='Pickup appointment'),
+                'del_address': ColumnMapping('W', 22, 'del_address', 'DEL address', 'string', description='Delivery address'),
+                'del_appt': ColumnMapping('X', 23, 'del_appt', 'DEL appt', 'string', description='Delivery appointment'),
             },
-            
+
             # GROUPS WORKSHEET - Telegram group registrations
             WorksheetType.GROUPS: {
                 'group_id': ColumnMapping('A', 0, 'group_id', 'Group ID', 'int', required=True, description='Telegram group ID'),
@@ -102,7 +112,7 @@ class ColumnMappingManager:
                 'updated_at': ColumnMapping('I', 8, 'updated_at', 'Updated At', 'datetime', description='Last modification'),
                 'notes': ColumnMapping('J', 9, 'notes', 'Notes', 'string', description='Additional notes'),
             },
-            
+
             # FLEET_STATUS WORKSHEET - Real-time tracking
             WorksheetType.FLEET_STATUS: {
                 'vin': ColumnMapping('A', 0, 'vin', 'VIN', 'string', required=True, validation_regex=r'^[A-Z0-9]{17}$', description='Vehicle identification'),
@@ -118,7 +128,7 @@ class ColumnMappingManager:
                 'group_chat_id': ColumnMapping('K', 10, 'group_chat_id', 'Group Chat ID', 'int', description='Associated chat'),
                 'last_contact': ColumnMapping('L', 11, 'last_contact', 'Last Contact', 'datetime', description='Last communication'),
             },
-            
+
             # ELD_TRACKER WORKSHEET - Location history
             WorksheetType.ELD_TRACKER: {
                 'vin': ColumnMapping('A', 0, 'vin', 'VIN', 'string', required=True, validation_regex=r'^[A-Z0-9]{17}$', description='Vehicle identification'),
@@ -133,7 +143,7 @@ class ColumnMappingManager:
                 'update_time': ColumnMapping('J', 9, 'update_time', 'Update Time', 'datetime', description='Update timestamp'),
                 'source': ColumnMapping('K', 10, 'source', 'Source', 'string', description='Data source'),
             },
-            
+
             # QC_PANEL WORKSHEET - Load management
             WorksheetType.QC_PANEL: {
                 'driver': ColumnMapping('A', 0, 'driver', 'DRIVER', 'string', description='Driver name'),
@@ -148,32 +158,40 @@ class ColumnMappingManager:
                 'del_address': ColumnMapping('W', 22, 'del_address', 'DEL ADDRESS', 'string', description='Delivery address'),
             }
         }
-    
-    def get_mapping(self, worksheet_type: WorksheetType, field_name: str) -> Optional[ColumnMapping]:
+
+    def get_mapping(self, worksheet_type: WorksheetType,
+                    field_name: str) -> Optional[ColumnMapping]:
         """Get column mapping for a specific field"""
         worksheet_mappings = self.mappings.get(worksheet_type, {})
         return worksheet_mappings.get(field_name)
-    
-    def get_all_mappings(self, worksheet_type: WorksheetType) -> Dict[str, ColumnMapping]:
+
+    def get_all_mappings(
+            self, worksheet_type: WorksheetType) -> Dict[str, ColumnMapping]:
         """Get all column mappings for a worksheet"""
         return self.mappings.get(worksheet_type, {})
-    
-    def get_column_by_letter(self, worksheet_type: WorksheetType, column_letter: str) -> Optional[ColumnMapping]:
+
+    def get_column_by_letter(
+            self,
+            worksheet_type: WorksheetType,
+            column_letter: str) -> Optional[ColumnMapping]:
         """Get mapping by column letter (A, B, C, etc.)"""
         worksheet_mappings = self.mappings.get(worksheet_type, {})
         for mapping in worksheet_mappings.values():
             if mapping.column_letter.upper() == column_letter.upper():
                 return mapping
         return None
-    
-    def get_column_by_index(self, worksheet_type: WorksheetType, column_index: int) -> Optional[ColumnMapping]:
+
+    def get_column_by_index(
+            self,
+            worksheet_type: WorksheetType,
+            column_index: int) -> Optional[ColumnMapping]:
         """Get mapping by column index (0-based)"""
         worksheet_mappings = self.mappings.get(worksheet_type, {})
         for mapping in worksheet_mappings.values():
             if mapping.column_index == column_index:
                 return mapping
         return None
-    
+
     def letter_to_index(self, column_letter: str) -> int:
         """Convert column letter to 0-based index (A=0, B=1, etc.)"""
         column_letter = column_letter.upper()
@@ -181,7 +199,7 @@ class ColumnMappingManager:
         for char in column_letter:
             result = result * 26 + (ord(char) - ord('A') + 1)
         return result - 1
-    
+
     def index_to_letter(self, column_index: int) -> str:
         """Convert 0-based index to column letter (0=A, 1=B, etc.)"""
         result = ""
@@ -189,23 +207,24 @@ class ColumnMappingManager:
             result = chr(column_index % 26 + ord('A')) + result
             column_index = column_index // 26 - 1
         return result
-    
-    def validate_data(self, worksheet_type: WorksheetType, field_name: str, value: Any) -> tuple[bool, str]:
+
+    def validate_data(self, worksheet_type: WorksheetType,
+                      field_name: str, value: Any) -> tuple[bool, str]:
         """Validate data against column mapping rules"""
         mapping = self.get_mapping(worksheet_type, field_name)
         if not mapping:
             return False, f"Unknown field: {field_name}"
-        
+
         # Check required fields
         if mapping.required and (value is None or str(value).strip() == ""):
             return False, f"Required field {mapping.display_name} is empty"
-        
+
         # Check regex validation
         if mapping.validation_regex and value:
             import re
             if not re.match(mapping.validation_regex, str(value)):
                 return False, f"Field {mapping.display_name} does not match required format"
-        
+
         # Type validation
         if value and mapping.data_type != 'string':
             try:
@@ -218,39 +237,46 @@ class ColumnMappingManager:
                     pass
             except ValueError:
                 return False, f"Field {mapping.display_name} has invalid {mapping.data_type} value"
-        
+
         return True, ""
-    
+
     def get_headers_list(self, worksheet_type: WorksheetType) -> List[str]:
         """Get ordered list of headers for a worksheet"""
         worksheet_mappings = self.mappings.get(worksheet_type, {})
         # Sort by column index
-        sorted_mappings = sorted(worksheet_mappings.values(), key=lambda x: x.column_index)
+        sorted_mappings = sorted(
+            worksheet_mappings.values(),
+            key=lambda x: x.column_index)
         return [mapping.display_name for mapping in sorted_mappings]
-    
-    def create_row_from_dict(self, worksheet_type: WorksheetType, data: Dict[str, Any]) -> List[Any]:
+
+    def create_row_from_dict(self,
+                             worksheet_type: WorksheetType,
+                             data: Dict[str,
+                                        Any]) -> List[Any]:
         """Create a row list from a dictionary using column mapping"""
         worksheet_mappings = self.mappings.get(worksheet_type, {})
         if not worksheet_mappings:
             return []
-        
+
         # Find the maximum column index to determine row length
-        max_index = max(mapping.column_index for mapping in worksheet_mappings.values())
+        max_index = max(
+            mapping.column_index for mapping in worksheet_mappings.values())
         row = [''] * (max_index + 1)
-        
+
         # Fill in the data
         for field_name, value in data.items():
             mapping = self.get_mapping(worksheet_type, field_name)
             if mapping:
                 row[mapping.column_index] = value if value is not None else ''
-        
+
         return row
-    
-    def create_dict_from_row(self, worksheet_type: WorksheetType, row: List[Any]) -> Dict[str, Any]:
+
+    def create_dict_from_row(
+            self, worksheet_type: WorksheetType, row: List[Any]) -> Dict[str, Any]:
         """Create a dictionary from a row list using column mapping"""
         worksheet_mappings = self.mappings.get(worksheet_type, {})
         result = {}
-        
+
         for field_name, mapping in worksheet_mappings.items():
             if mapping.column_index < len(row):
                 value = row[mapping.column_index]
@@ -258,34 +284,38 @@ class ColumnMappingManager:
                 result[field_name] = value if value != '' else None
             else:
                 result[field_name] = None
-        
+
         return result
-    
-    def get_column_range(self, worksheet_type: WorksheetType, field_names: List[str]) -> str:
+
+    def get_column_range(
+            self,
+            worksheet_type: WorksheetType,
+            field_names: List[str]) -> str:
         """Get A1 notation range for specified fields"""
         if not field_names:
             return ""
-        
+
         column_letters = []
         for field_name in field_names:
             mapping = self.get_mapping(worksheet_type, field_name)
             if mapping:
                 column_letters.append(mapping.column_letter)
-        
+
         if not column_letters:
             return ""
-        
+
         # Sort and get range
         column_letters.sort()
         if len(column_letters) == 1:
             return f"{column_letters[0]}:{column_letters[0]}"
         else:
             return f"{column_letters[0]}:{column_letters[-1]}"
-    
-    def debug_worksheet_mapping(self, worksheet_type: WorksheetType) -> Dict[str, Any]:
+
+    def debug_worksheet_mapping(
+            self, worksheet_type: WorksheetType) -> Dict[str, Any]:
         """Get debug information about a worksheet mapping"""
         worksheet_mappings = self.mappings.get(worksheet_type, {})
-        
+
         debug_info = {
             'worksheet_type': worksheet_type.value,
             'total_columns': len(worksheet_mappings),
@@ -293,7 +323,7 @@ class ColumnMappingManager:
             'validated_fields': [],
             'column_details': []
         }
-        
+
         for field_name, mapping in worksheet_mappings.items():
             debug_info['column_details'].append({
                 'field_name': field_name,
@@ -305,20 +335,22 @@ class ColumnMappingManager:
                 'has_validation': bool(mapping.validation_regex),
                 'description': mapping.description
             })
-            
+
             if mapping.required:
                 debug_info['required_fields'].append(field_name)
-            
+
             if mapping.validation_regex:
                 debug_info['validated_fields'].append(field_name)
-        
+
         # Sort by column index
         debug_info['column_details'].sort(key=lambda x: x['column_index'])
-        
+
         return debug_info
+
 
 # Global instance (will be initialized with config when available)
 column_mapper = None
+
 
 def initialize_column_mapper(config=None):
     """Initialize the global column mapper with config"""
@@ -327,22 +359,29 @@ def initialize_column_mapper(config=None):
     return column_mapper
 
 # Convenience functions
+
+
 def get_assets_mapping(field_name: str) -> Optional[ColumnMapping]:
     """Get assets worksheet column mapping"""
     return column_mapper.get_mapping(WorksheetType.ASSETS, field_name)
+
 
 def get_groups_mapping(field_name: str) -> Optional[ColumnMapping]:
     """Get groups worksheet column mapping"""
     return column_mapper.get_mapping(WorksheetType.GROUPS, field_name)
 
+
 def get_fleet_status_mapping(field_name: str) -> Optional[ColumnMapping]:
     """Get fleet status worksheet column mapping"""
     return column_mapper.get_mapping(WorksheetType.FLEET_STATUS, field_name)
+
 
 def validate_vin(vin: str) -> tuple[bool, str]:
     """Validate VIN format"""
     return column_mapper.validate_data(WorksheetType.ASSETS, 'vin', vin)
 
+
 def validate_driver_name(driver_name: str) -> tuple[bool, str]:
     """Validate driver name"""
-    return column_mapper.validate_data(WorksheetType.ASSETS, 'driver_name', driver_name)
+    return column_mapper.validate_data(
+        WorksheetType.ASSETS, 'driver_name', driver_name)

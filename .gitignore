@@ -1,49 +1,8 @@
-# ===== Core Python =====
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-*.pkl
+# Log files
 *.log
+*.log.*
+logs/
 
-# ===== Environment & Secrets =====
-.env
-.env.*
-*.env
-*.json
-credentials/
-service_account.json
-*.b64
-
-# ===== Virtual Environments =====
-.venv/
-env/
-venv/
-ENV/
-
-# ===== IDE / Editor Config =====
-.vscode/
-.idea/
-*.sublime-project
-*.sublime-workspace
-
-# ===== OS Files =====
-.DS_Store
-Thumbs.db
-
-# ===== Test / Coverage =====
-.coverage
-htmlcov/
-.tox/
-pytest_cache/
-
-# ===== Docker =====
-*.pid
-*.tar
-.dockerignore
-
-# ===== Build & Distribution =====
-build/
-dist/
-*.egg-info/
-.eggs/
+# Excel files
+*.xlsx
+*.xls
