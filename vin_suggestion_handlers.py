@@ -26,7 +26,8 @@ CB_MANUAL_SEARCH = "MANUAL_SEARCH"
 CONFIDENCE_THRESHOLD = 70
 # Score threshold for auto-registration (higher threshold for automatic
 # actions)
-AUTO_REGISTER_THRESHOLD = 85
+# Lowered to 70 to handle hyphenated names like "Kevin Diaz-Salazar"
+AUTO_REGISTER_THRESHOLD = 70
 
 
 async def auto_register_vin_on_group_join(
@@ -92,8 +93,11 @@ async def auto_register_vin_on_group_join(
             logger.warning("Unable to load driver data for auto-registration")
             return
 
-        assets_index = build_assets_index(assets_data, driver_col=3, vin_col=4)
-        logger.debug(f"Built assets index with {len(assets_index)} entries")
+        logger.info(f"Loaded {len(assets_data)} rows from assets sheet")
+
+        # Auto-detect structure - don't pass columns, let it auto-detect
+        assets_index = build_assets_index(assets_data)
+        logger.info(f"Built assets index with {len(assets_index)} entries for auto-registration")
 
     except Exception as e:
         logger.error(f"Error loading assets data: {e}")
@@ -119,67 +123,81 @@ async def auto_register_vin_on_group_join(
         auto_register_candidates = [
             item for item in shortlist if item[2] >= AUTO_REGISTER_THRESHOLD]
 
-        if auto_register_candidates and len(auto_register_candidates) == 1:
-            # Single high-confidence match - attempt auto-registration
-            driver_name, vin, score = auto_register_candidates[0]
-            logger.info(
-                f"Auto-registering VIN {vin} for group {group_id} with confidence {score}%")
+        # Additional safety: Only auto-register if top match is significantly better than second
+        # This prevents false positives when multiple drivers have similar names
+        if auto_register_candidates and len(auto_register_candidates) >= 1:
+            top_match = shortlist[0]
+            second_match = shortlist[1] if len(shortlist) > 1 else None
 
-            # Double-check that VIN isn't already registered (race condition
-            # protection)
-            existing_vin_check = await get_existing_group_vin(group_id, context)
-            if existing_vin_check:
+            # Auto-register if:
+            # 1. Top match is above threshold AND
+            # 2. (Only one candidate above threshold OR top match is 10+ points better than second)
+            should_auto_register = (
+                len(auto_register_candidates) == 1 or
+                (second_match and top_match[2] - second_match[2] >= 10)
+            )
+
+            if should_auto_register:
+                # Single high-confidence match - attempt auto-registration
+                driver_name, vin, score = top_match
                 logger.info(
-                    f"VIN already registered during auto-registration attempt: {existing_vin_check}")
-                return
+                    f"Auto-registering VIN {vin} for group {group_id} with confidence {score}%")
 
-            try:
-                success = await save_group_vin(group_id, vin.upper(), context, group_title)
-                if success:
-                    # Escape special Markdown characters in driver name
-                    safe_driver = driver_name.replace(
-                        '*', '\\*').replace(
-                        '_', '\\_').replace(
-                        '[', '\\[').replace(
-                        ']', '\\]').replace(
-                        '`', '\\`') if driver_name else "Unknown Driver"
+                # Double-check that VIN isn't already registered (race condition
+                # protection)
+                existing_vin_check = await get_existing_group_vin(group_id, context)
+                if existing_vin_check:
+                    logger.info(
+                        f"VIN already registered during auto-registration attempt: {existing_vin_check}")
+                    return
 
-                    message = (
-                        f"🎉 **VIN Auto-Registered!**\n\n"
-                        f"🤖 **Bot detected:** High confidence match\n"
-                        f"🎯 **Confidence:** {score}%\n"
-                        f"👤 **Driver:** {safe_driver}\n"
-                        f"🚛 **VIN:** `{vin.upper()}`\n\n"
-                        f"✅ **Ready for location tracking!**\n\n"
-                        f"_Auto-registered based on group name. Use 🛠 Change VIN if incorrect._")
+                try:
+                    success = await save_group_vin(group_id, vin.upper(), context, group_title)
+                    if success:
+                        # Escape special Markdown characters in driver name
+                        safe_driver = driver_name.replace(
+                            '*', '\\*').replace(
+                            '_', '\\_').replace(
+                            '[', '\\[').replace(
+                            ']', '\\]').replace(
+                            '`', '\\`') if driver_name else "Unknown Driver"
 
-                    keyboard = [
-                        [InlineKeyboardButton("🛰 Get Location Update", callback_data="get_update")],
-                        [InlineKeyboardButton("🛠 Change VIN", callback_data="set_vin")]
-                    ]
-                    reply_markup = InlineKeyboardMarkup(keyboard)
+                        message = (
+                            f"🎉 **VIN Auto-Registered!**\n\n"
+                            f"🤖 **Bot detected:** High confidence match\n"
+                            f"🎯 **Confidence:** {score}%\n"
+                            f"👤 **Driver:** {safe_driver}\n"
+                            f"🚛 **VIN:** `{vin.upper()}`\n\n"
+                            f"✅ **Ready for location tracking!**\n\n"
+                            f"_Auto-registered based on group name. Use 🛠 Change VIN if incorrect._")
 
-                    try:
-                        if update.message:
-                            await update.message.reply_text(message, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
-                        elif update.callback_query:
-                            await update.callback_query.edit_message_text(message, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+                        keyboard = [
+                            [InlineKeyboardButton("🛰 Get Location Update", callback_data="get_update")],
+                            [InlineKeyboardButton("🛠 Change VIN", callback_data="set_vin")]
+                        ]
+                        reply_markup = InlineKeyboardMarkup(keyboard)
 
-                        logger.info(
-                            f"Successfully auto-registered VIN {vin.upper()} for group {group_id}")
-                        return  # Success!
+                        try:
+                            if update.message:
+                                await update.message.reply_text(message, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+                            elif update.callback_query:
+                                await update.callback_query.edit_message_text(message, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
-                    except Exception as e:
-                        logger.error(
-                            f"Error sending auto-registration success message: {e}")
-                        return
+                            logger.info(
+                                f"Successfully auto-registered VIN {vin.upper()} for group {group_id}")
+                            return  # Success!
 
-                else:
-                    logger.warning(
-                        f"Auto-registration failed for VIN {vin}, will not show manual options")
+                        except Exception as e:
+                            logger.error(
+                                f"Error sending auto-registration success message: {e}")
+                            return
 
-            except Exception as e:
-                logger.error(f"Error during auto-registration: {e}")
+                    else:
+                        logger.warning(
+                            f"Auto-registration failed for VIN {vin}, will not show manual options")
+
+                except Exception as e:
+                    logger.error(f"Error during auto-registration: {e}")
 
     # Auto-registration didn't work - don't fallback to manual selection
     # This keeps the bot quiet unless there's a clear match
@@ -542,26 +560,23 @@ async def load_assets_data(
     Integrate with your existing google_integration.py
     """
     try:
-        # Option 1: Use cached worksheet handle
-        if context.bot_data and 'assets_ws' in context.bot_data and context.bot_data[
-                'assets_ws']:
-            return context.bot_data['assets_ws'].get_all_values()
+        # ALWAYS use fresh GoogleSheetsIntegration to avoid stale cache
+        # The bot_data cached worksheet often has stale/partial data
+        from google_integration import GoogleSheetsIntegration
+        from config import Config
+        config = Config()
+        google = GoogleSheetsIntegration(config)
 
-        # Option 2: Use your existing GoogleSheetsIntegration
-        if context.bot_data and 'google_integration' in context.bot_data and context.bot_data[
-                'google_integration']:
-            google = context.bot_data['google_integration']
-            if hasattr(google, 'assets_worksheet') and google.assets_worksheet:
-                return google.assets_worksheet.get_all_values()
+        if google.assets_worksheet:
+            data = google.assets_worksheet.get_all_values()
+            logger.debug(f"Loaded {len(data)} rows from fresh assets worksheet connection")
+            return data
 
-        # Option 3: Initialize fresh connection (fallback)
-        logger.warning(
-            "Assets worksheet not found in context, attempting fresh connection")
-        # Add your GoogleSheetsIntegration initialization here
+        logger.error("Assets worksheet not available in GoogleSheetsIntegration")
         return None
 
     except Exception as e:
-        logger.error(f"Error loading assets data: {e}")
+        logger.error(f"Error loading assets data: {e}", exc_info=True)
         return None
 
 

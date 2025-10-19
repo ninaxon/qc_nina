@@ -230,56 +230,229 @@ class EnhancedLocationBot(RiskDetectionMixin):
                 "Risk detection not available - continuing without cargo theft monitoring")
             self.enable_risk_monitoring = False
 
+    def _escape_markdown(self, text: str) -> str:
+        """Escape special Markdown characters to prevent parsing errors"""
+        if not text:
+            return ""
+        
+        # Characters that need to be escaped in MarkdownV2
+        special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+        
+        escaped_text = str(text)
+        for char in special_chars:
+            escaped_text = escaped_text.replace(char, f'\\{char}')
+        
+        return escaped_text
+
+    async def _robust_tms_lookup(self, vin: str, max_retries: int = 3) -> Optional[Dict[str, Any]]:
+        """Robust TMS truck lookup with retry logic and multiple fallback strategies"""
+        import time
+        import asyncio
+        
+        vin_upper = vin.upper().strip()
+        logger.info(f"Starting robust TMS lookup for VIN: {vin_upper}")
+        
+        # Proactive health check before starting attempts
+        health_info = await self._check_tms_health()
+        if health_info['status'] != 'healthy':
+            logger.warning(f"TMS health check failed before lookup: {health_info}")
+        
+        for attempt in range(max_retries):
+            try:
+                logger.debug(f"TMS lookup attempt {attempt + 1}/{max_retries} for VIN {vin_upper}")
+                
+                # Strategy 1: Fast cached lookup
+                truck = self.tms_integration.find_truck_by_vin_fast(vin)
+                if truck:
+                    logger.info(f"✅ VIN {vin_upper} found via cached lookup on attempt {attempt + 1}")
+                    return truck
+                
+                # Strategy 2: Individual truck lookup (fallback)
+                if hasattr(self.tms_integration, 'load_individual_truck'):
+                    logger.debug(f"Trying individual truck lookup for VIN {vin_upper}")
+                    try:
+                        individual_truck = self.tms_integration.load_individual_truck(vin)
+                        if individual_truck:
+                            logger.info(f"✅ VIN {vin_upper} found via individual lookup on attempt {attempt + 1}")
+                            return individual_truck
+                    except Exception as individual_error:
+                        logger.debug(f"Individual truck lookup failed: {individual_error}")
+                
+                # Strategy 3: Direct TMS API call as last resort
+                if attempt == max_retries - 1:  # Last attempt
+                    logger.warning(f"All standard lookups failed for VIN {vin_upper}, trying direct API call")
+                    try:
+                        direct_result = await self._direct_tms_api_call(vin)
+                        if direct_result:
+                            logger.info(f"✅ VIN {vin_upper} found via direct API call")
+                            return direct_result
+                    except Exception as direct_error:
+                        logger.error(f"Direct TMS API call failed: {direct_error}")
+                
+                # Enhanced debugging for failed attempts
+                if trucks:
+                    logger.warning(f"VIN {vin_upper} not found in {len(trucks)} trucks (attempt {attempt + 1})")
+                    
+                    # Check for partial matches to help debug
+                    partial_matches = []
+                    similar_vins = []
+                    for t in trucks[:20]:  # Check more trucks for debugging
+                        truck_vin = (t.get('vin', '') or '').strip().upper()
+                        if not truck_vin:
+                            continue
+                            
+                        # Exact partial match
+                        if vin_upper in truck_vin or truck_vin in vin_upper:
+                            partial_matches.append(f"{truck_vin} (driver: {t.get('driver_name', 'N/A')})")
+                        
+                        # Similar VIN pattern (same length, similar characters)
+                        if len(truck_vin) == len(vin_upper):
+                            differences = sum(c1 != c2 for c1, c2 in zip(vin_upper, truck_vin))
+                            if differences <= 2:  # Allow up to 2 character differences
+                                similar_vins.append(f"{truck_vin} ({differences} diff)")
+                    
+                    if partial_matches:
+                        logger.debug(f"Partial VIN matches found: {partial_matches[:3]}")
+                    elif similar_vins:
+                        logger.debug(f"Similar VINs found: {similar_vins[:3]}")
+                    else:
+                        # Show sample VINs for comparison
+                        sample_vins = [(t.get('vin', 'NO_VIN') or 'NO_VIN').strip() for t in trucks[:5]]
+                        logger.debug(f"Sample TMS VINs: {sample_vins}")
+                else:
+                    logger.error(f"TMS returned no trucks on attempt {attempt + 1}")
+                
+                # Wait before retry (exponential backoff)
+                if attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) * 0.5  # 0.5s, 1s, 2s...
+                    logger.debug(f"Waiting {wait_time}s before retry...")
+                    await asyncio.sleep(wait_time)
+                    
+            except Exception as e:
+                logger.error(f"TMS lookup attempt {attempt + 1} failed: {e}")
+                if attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) * 1.0  # Longer wait for errors
+                    logger.debug(f"Waiting {wait_time}s after error before retry...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(f"All TMS lookup attempts failed for VIN {vin_upper}")
+        
+        logger.error(f"❌ VIN {vin_upper} not found after {max_retries} attempts with all strategies")
+        return None
+
+    async def _direct_tms_api_call(self, vin: str) -> Optional[Dict[str, Any]]:
+        """Direct TMS API call as last resort fallback"""
+        try:
+            # Create a fresh TMS integration instance to avoid any cached issues
+            from tms_integration import TMSIntegration
+            fresh_tms = TMSIntegration(self.config)
+            
+            # Try to get truck data directly
+            trucks = fresh_tms.load_truck_list(retry_count=1)  # Single retry
+            if trucks:
+                for truck in trucks:
+                    if (truck.get('vin', '') or '').strip().upper() == vin.upper().strip():
+                        logger.info(f"Direct API call successful for VIN {vin}")
+                        return truck
+            
+            return None
+        except Exception as e:
+            logger.error(f"Direct TMS API call failed for VIN {vin}: {e}")
+            return None
+
+    async def _check_tms_health(self) -> Dict[str, Any]:
+        """Check TMS API health and return diagnostic information"""
+        health_info = {
+            'status': 'unknown',
+            'truck_count': 0,
+            'response_time_ms': None,
+            'error': None,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        try:
+            import time
+            start_time = time.time()
+            
+            trucks = self.tms_integration.load_truck_list()
+            
+            end_time = time.time()
+            response_time = (end_time - start_time) * 1000  # Convert to milliseconds
+            
+            health_info['response_time_ms'] = round(response_time, 2)
+            health_info['truck_count'] = len(trucks) if trucks else 0
+            
+            if trucks and len(trucks) > 0:
+                health_info['status'] = 'healthy'
+                logger.debug(f"TMS health check: {health_info['truck_count']} trucks in {response_time:.1f}ms")
+            else:
+                health_info['status'] = 'unhealthy'
+                health_info['error'] = 'No trucks returned from API'
+                logger.warning(f"TMS health check failed: No trucks returned")
+                
+        except Exception as e:
+            health_info['status'] = 'error'
+            health_info['error'] = str(e)
+            logger.error(f"TMS health check error: {e}")
+        
+        return health_info
+
     async def restore_group_schedules(
             self, context: ContextTypes.DEFAULT_TYPE):
-        """Restore scheduled location updates for all registered groups on bot restart"""
+        """Restore group sessions for all registered groups on bot restart - scheduling handled by GroupUpdateScheduler"""
         if not context.job_queue:
             logger.warning(
-                "Job queue not available, cannot restore group schedules")
+                "Job queue not available, cannot restore group sessions")
             return
 
-        logger.info("🔄 Restoring group schedules after bot restart...")
+        logger.info("🔄 Restoring group sessions after bot restart...")
 
         try:
             # Get all registered groups from Google Sheets
             groups_records = self.google_integration._get_groups_records_safe()
+            logger.info(f"Found {len(groups_records)} total groups in database")
             restored_count = 0
 
             for record in groups_records:
                 try:
                     group_id = int(record.get('group_id', 0))
-                    vin = record.get('vin', '').strip().upper()
-                    status = record.get('status', '').strip().upper()
+                    vin_raw = record.get('vin', '')
+                    vin = (vin_raw or '').strip().upper()
+                    status_raw = record.get('status', '')
+                    status = (status_raw or '').strip().upper()
                     group_title = record.get(
                         'group_title', f'Group {group_id}')
 
+                    logger.debug(f"Processing group {group_id}: status='{status}', vin='{vin[:10]}...', title='{group_title}'")
+
                     # Only restore active groups with VINs
                     if status == 'ACTIVE' and vin and group_id:
-                        # Create/restore session
+                        # Create/restore session (sessions are needed for state tracking)
                         session = self.get_session(group_id)
                         session.vin = vin
                         session.is_group_registered = True
 
-                        # Schedule group location updates
-                        self._schedule_group_location_updates(
-                            group_id, context)
+                        # Mark session as enabled for auto-refresh compatibility
+                        # The centralized GroupUpdateScheduler handles all scheduling
+                        session.auto_refresh_enabled = True
                         restored_count += 1
 
                         logger.debug(
-                            f"Restored schedule for group {group_id} (VIN: {vin[-4:]})")
+                            f"Restored session for group {group_id} (VIN: {vin[-4:]})")
 
                 except Exception as e:
                     logger.error(
-                        f"Failed to restore schedule for group record {record}: {e}")
+                        f"Failed to restore session for group record {record}: {e}")
                     continue
 
             logger.info(
-                f"✅ Restored {restored_count} group location schedules on bot restart")
+                f"✅ Restored {restored_count} group sessions")
+            logger.info("📅 Group location updates will be handled by centralized GroupUpdateScheduler")
 
         except Exception as e:
-            logger.error(f"Failed to restore group schedules: {e}")
+            logger.error(f"Failed to restore group sessions: {e}")
             logger.warning(
-                "Groups may need to manually restart their location updates")
+                "Groups may need manual attention - check GroupUpdateScheduler logs")
 
         # Bot instance reference (will be set when application is built)
         self.bot_instance = None
@@ -291,8 +464,9 @@ class EnhancedLocationBot(RiskDetectionMixin):
         if ETA_SERVICE_AVAILABLE:
             try:
                 from eta_service import ETAService
-                self.eta_service = ETAService(self.config.ORS_API_KEY)
-                logger.info("ETA service initialized successfully")
+                google_maps_key = getattr(self.config, 'GOOGLE_MAPS_API_KEY', None)
+                self.eta_service = ETAService(self.config.ORS_API_KEY, google_maps_key)
+                logger.info("ETA service initialized successfully with Google Maps fallback")
             except Exception as e:
                 logger.error(f"Failed to initialize ETA service: {e}")
                 self.eta_service = None
@@ -456,7 +630,7 @@ class EnhancedLocationBot(RiskDetectionMixin):
 
         except Exception as e:
             logger.error(f"Error handling risk alert callback: {e}")
-            await query.edit_message_text(f"❌ Error: {str(e)}", parse_mode='Markdown')
+            await query.edit_message_text(f"❌ Error: {self._escape_markdown(str(e))}", parse_mode='Markdown')
 
     async def _handle_contact_driver(self, query, vin: str):
         """Handle contact driver request"""
@@ -494,7 +668,7 @@ class EnhancedLocationBot(RiskDetectionMixin):
             )
 
         except Exception as e:
-            await query.edit_message_text(f"❌ Error getting contact info: {str(e)}", parse_mode='Markdown')
+            await query.edit_message_text(f"❌ Error getting contact info: {self._escape_markdown(str(e))}", parse_mode='Markdown')
 
     def _mute_key(self, key: str, hours: int = 6):
         """Mute alert key for specified hours"""
@@ -549,7 +723,7 @@ class EnhancedLocationBot(RiskDetectionMixin):
 
         except Exception as e:
             logger.error(f"Error handling ETA late acknowledgment: {e}")
-            await query.edit_message_text(f"❌ Error: {str(e)}", parse_mode='Markdown')
+            await query.edit_message_text(f"❌ Error: {self._escape_markdown(str(e))}", parse_mode='Markdown')
 
     def _schedule_group_location_updates(
             self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
@@ -814,20 +988,10 @@ class EnhancedLocationBot(RiskDetectionMixin):
                 map_source="Manual Update"
             )
 
-            message = (
-                f"🚛 **LIVE UPDATE** {header_emoji}\n\n"
-                f"👤 **Driver:** {driver_name}\n"
-                f"**Speed:** {speed_display}\n"
-                f"{status_emoji} **Status:** {truck.get('status', 'Unknown').title()}\n")
-
-            # Add stop status indicator
-            message += f"**Movement:** {stop_status}\n"
-
-            # Add stop resumption message if driver just started moving
-            if stop_message:
-                message += f"{stop_message}\n"
-
-            message += f"📍 **Current Location:** {truck.get('address', 'Unknown')}\n"
+            # Get current time in EDT for ETA calculations
+            import pytz
+            edt_tz = pytz.timezone('America/New_York')
+            now_edt = datetime.now(edt_tz)
 
             # Check if we have stop location for route calculation
             if session.stop_address:
@@ -1343,9 +1507,9 @@ class EnhancedLocationBot(RiskDetectionMixin):
         except Exception as e:
             logger.error(f"Error in button router: {e}")
             try:
-                await query.edit_message_text(f"❌ Error: {str(e)}", parse_mode='Markdown')
+                await query.edit_message_text(f"❌ Error: {self._escape_markdown(str(e))}", parse_mode='Markdown')
             except Exception as fallback_error:
-                await context.bot.send_message(chat_id, f"❌ Error: {str(e)}")
+                await context.bot.send_message(chat_id, f"❌ Error: {self._escape_markdown(str(e))}")
 
     async def _handle_get_update(
             self,
@@ -1444,8 +1608,10 @@ class EnhancedLocationBot(RiskDetectionMixin):
 
         except Exception as e:
             logger.error(f"Manual location update failed: {e}")
+            # Escape markdown special characters in error message
+            error_msg = str(e).replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace('`', '\\`')
             await update.callback_query.edit_message_text(
-                f"❌ **Update Failed**\n\n{str(e)}",
+                f"❌ **Update Failed**\n\n{error_msg}",
                 parse_mode='Markdown',
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=CB_BACK_TO_MAIN)]])
             )
@@ -1542,6 +1708,11 @@ class EnhancedLocationBot(RiskDetectionMixin):
             "⏰ **Set Appointment Time**\n\n"
             "Send the appointment time for delivery comparison.\n\n"
             "**Format Examples:**\n"
+            "**Date & Time:**\n"
+            "• 2025-09-26 08:00\n"
+            "• 2025-09-26 8:00 AM\n"
+            "• 09/26/2025 2:30 PM\n"
+            "**Time Only:**\n"
             "• 2:30 PM\n"
             "• 08:15 AM\n"
             "• 14:45\n\n"
@@ -2142,7 +2313,7 @@ class EnhancedLocationBot(RiskDetectionMixin):
         except Exception as e:
             logger.error(f"Error getting risk status: {e}")
             await update.callback_query.edit_message_text(
-                f"❌ **Risk Status Error**\n\n{str(e)}",
+                f"❌ **Risk Status Error**\n\n{self._escape_markdown(str(e))}",
                 parse_mode='Markdown',
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=CB_BACK_TO_MAIN)]])
             )
@@ -2155,10 +2326,15 @@ class EnhancedLocationBot(RiskDetectionMixin):
         user_id = update.effective_user.id if update.effective_user else 0
         chat_id = update.effective_chat.id
 
+        logger.info(f"updateall command called by user {user_id}, owner is {self.owner_id}")
+
         # Check if user is owner
         if user_id != self.owner_id:
+            logger.warning(f"updateall command denied for user {user_id} (not owner {self.owner_id})")
             await update.message.reply_text("❌ This command is only available to the bot owner.")
             return
+        
+        logger.info(f"updateall command authorized for owner {user_id}")
 
         # Log command execution
         self.google_integration.log_command_execution(
@@ -2170,16 +2346,19 @@ class EnhancedLocationBot(RiskDetectionMixin):
         )
 
         try:
+            logger.info("Starting updateall command execution...")
+            
             # Get all registered groups from Google Sheets
             logger.info(
                 "Attempting to get groups records from Google Sheets...")
 
             # Check if groups worksheet is available
             if not self.google_integration.groups_worksheet:
+                logger.error("Groups worksheet is None - not initialized properly")
                 await update.message.reply_text("❌ **Groups worksheet not initialized**\n\nThere may be a connection issue with Google Sheets.")
-                logger.error(
-                    "Groups worksheet is None - not initialized properly")
                 return
+            
+            logger.info("Groups worksheet is available, proceeding...")
 
             groups_records = self.google_integration._get_groups_records_safe()
             logger.info(
@@ -2195,13 +2374,20 @@ class EnhancedLocationBot(RiskDetectionMixin):
             skipped_count = 0
             for i, record in enumerate(groups_records):
                 group_id = record.get('group_id')
-                vin = record.get('vin', '').strip()
-                status = record.get('status', '').strip().upper()
+                vin_raw = record.get('vin', '')
+                vin = (vin_raw or '').strip()
+                status_raw = record.get('status', '')
+                status = (status_raw or '').strip().upper()
 
                 logger.debug(
                     f"Record {i}: group_id={group_id}, vin={vin}, status={status}")
 
-                if group_id and vin and status == 'ACTIVE':
+                # Determine if group is active: explicit "ACTIVE" or timestamp pattern (YYYY-MM-DD)
+                is_active = (status == 'ACTIVE' or 
+                            (len(status) >= 10 and status[4] == '-' and status[7] == '-' and 
+                             status[:4].isdigit() and status[5:7].isdigit() and status[8:10].isdigit()))
+                
+                if group_id and vin and is_active:
                     try:
                         groups.append({
                             'group_id': int(group_id),
@@ -2220,12 +2406,17 @@ class EnhancedLocationBot(RiskDetectionMixin):
                         logger.debug(f"Record {i} skipped: missing group_id")
                     elif not vin:
                         logger.debug(f"Record {i} skipped: missing VIN")
-                    elif status != 'ACTIVE':
+                    elif not is_active:
                         logger.debug(
-                            f"Record {i} skipped: status is '{status}', not 'ACTIVE'")
+                            f"Record {i} skipped: status is '{status}', not ACTIVE or timestamp pattern")
 
             logger.info(
                 f"Processed groups: {len(groups)} active, {skipped_count} skipped")
+            
+            if groups:
+                logger.info(f"Found {len(groups)} active groups, proceeding with updates...")
+            else:
+                logger.warning("No active groups found, command will provide error message")
 
             if not groups:
                 # Provide more detailed error message with actionable steps
@@ -2274,8 +2465,8 @@ class EnhancedLocationBot(RiskDetectionMixin):
                     continue
 
                 try:
-                    # Get truck location from TMS
-                    trucks = self.tms_integration.load_truck_list()
+                    # Get truck location from TMS (bypass cache for fresh data)
+                    trucks = self.tms_integration.load_truck_list(use_cache=False)
                     truck = self.tms_integration.find_truck_by_vin(trucks, vin)
 
                     if not truck:
@@ -2443,16 +2634,20 @@ class EnhancedLocationBot(RiskDetectionMixin):
         except Exception as e:
             logger.error(f"Error in update_assets_command: {e}")
             try:
+                # Escape special characters that might break Markdown parsing
+                error_str = str(e).replace('*', '\\*').replace('_', '\\_').replace('[', '\\[').replace(']', '\\]').replace('`', '\\`')
                 await status_msg.edit_text(
                     f"❌ **Command Failed**\n\n"
-                    f"Error: {str(e)}\n\n"
+                    f"Error: {error_str}\n\n"
                     f"Check logs for more details.",
                     parse_mode="Markdown"
                 )
             except Exception as fallback_error:
+                # Last resort - use plain text without Markdown to avoid parsing errors
+                error_str = str(e)
                 await update.message.reply_text(
-                    f"❌ **Command Failed**\n\n"
-                    f"Error: {str(e)}\n\n"
+                    f"❌ Command Failed\n\n"
+                    f"Error: {error_str}\n\n"
                     f"Check logs for more details."
                 )
 
@@ -2722,8 +2917,8 @@ class EnhancedLocationBot(RiskDetectionMixin):
                             # Count by status
                             status_counts = {}
                             for record in records:
-                                status = record.get(
-                                    'status', '').strip().upper()
+                                status_raw = record.get('status', '')
+                                status = (status_raw or '').strip().upper()
                                 status_counts[status] = status_counts.get(
                                     status, 0) + 1
 
@@ -2766,8 +2961,10 @@ class EnhancedLocationBot(RiskDetectionMixin):
                 driver_vin_map = {}
 
                 for record in assets_records:
-                    vin = record.get('VIN', '').strip().upper()
-                    driver = record.get('Driver Name', '').strip()
+                    vin_raw = record.get('VIN', '')
+                    vin = (vin_raw or '').strip().upper()
+                    driver_raw = record.get('Driver Name', '')
+                    driver = (driver_raw or '').strip()
 
                     if vin:
                         vin_counts[vin] = vin_counts.get(vin, 0) + 1
@@ -3063,6 +3260,10 @@ class EnhancedLocationBot(RiskDetectionMixin):
         """Process driver name input with Google Sheets lookup first"""
         chat_id = update.effective_chat.id
         session = self.get_session(chat_id)
+        
+        # Ensure driver_name is never None
+        if not driver_name:
+            driver_name = ""
 
         try:
             # Step 1: Look up driver name in Google Sheets to get VIN
@@ -3154,21 +3355,45 @@ class EnhancedLocationBot(RiskDetectionMixin):
                         "🔙 Back", callback_data=CB_BACK_TO_MAIN)]]
 
                 try:
-                    await update.message.reply_text(
-                        message,
-                        parse_mode='Markdown',
-                        reply_markup=InlineKeyboardMarkup(keyboard)
-                    )
+                    # Handle both message and callback query contexts
+                    if update.message:
+                        await update.message.reply_text(
+                            message,
+                            parse_mode='Markdown',
+                            reply_markup=InlineKeyboardMarkup(keyboard)
+                        )
+                    elif update.callback_query:
+                        await context.bot.send_message(
+                            chat_id=update.effective_chat.id,
+                            text=message,
+                            parse_mode='Markdown',
+                            reply_markup=InlineKeyboardMarkup(keyboard)
+                        )
+                    else:
+                        logger.error("Unable to send fuzzy matching - no message or callback_query")
+                        return
+                    
                     logger.info(
                         "Fuzzy matching message sent successfully with inline buttons")
                 except Exception as button_error:
                     logger.error(
                         f"Failed to send fuzzy matching buttons: {button_error}")
                     # Fallback without buttons
-                    await update.message.reply_text(
-                        message + f"\n\n⚠️ **Button error**: {str(button_error)}",
-                        parse_mode='Markdown'
-                    )
+                    fallback_message = message + f"\n\n⚠️ **Button error**: {str(button_error)}"
+                    
+                    if update.message:
+                        await update.message.reply_text(
+                            fallback_message,
+                            parse_mode='Markdown'
+                        )
+                    elif update.callback_query:
+                        await context.bot.send_message(
+                            chat_id=update.effective_chat.id,
+                            text=fallback_message,
+                            parse_mode='Markdown'
+                        )
+                    else:
+                        logger.error("Unable to send fallback message - no message or callback_query")
                 return
 
             # If we have a VIN and didn't show fuzzy matching, proceed with
@@ -3176,10 +3401,22 @@ class EnhancedLocationBot(RiskDetectionMixin):
             if not vin:
                 logger.warning(
                     f"No VIN found for driver {driver_name} and no suggestions available")
-                await update.message.reply_text(
-                    f"⚠️ **Driver Not Found**\n\nNo driver found with name: **{driver_name}**",
-                    parse_mode='Markdown'
-                )
+                
+                not_found_message = f"⚠️ **Driver Not Found**\n\nNo driver found with name: **{driver_name}**"
+                
+                if update.message:
+                    await update.message.reply_text(
+                        not_found_message,
+                        parse_mode='Markdown'
+                    )
+                elif update.callback_query:
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text=not_found_message,
+                        parse_mode='Markdown'
+                    )
+                else:
+                    logger.error("Unable to send driver not found message - no message or callback_query")
                 return
 
             # Step 2: Verify the VIN-to-driver mapping is correct
@@ -3192,30 +3429,143 @@ class EnhancedLocationBot(RiskDetectionMixin):
                 # Do reverse lookup: VIN -> correct driver name
                 correct_driver = self.google_integration.get_driver_name_by_vin(
                     vin)
-                if correct_driver and correct_driver.lower() != driver_name.lower():
+                if correct_driver and driver_name and correct_driver.lower() != driver_name.lower():
                     logger.warning(
                         f"VIN mapping conflict! Input: '{driver_name}' -> VIN: {vin}, but VIN {vin} actually belongs to '{correct_driver}'")
                     # Use the correct driver name instead
                     driver_name = correct_driver
                     logger.info(f"Corrected driver name to: {driver_name}")
+                elif correct_driver and not driver_name:
+                    # If we didn't have a driver name but found one via VIN lookup
+                    driver_name = correct_driver
+                    logger.info(f"Set driver name from VIN lookup: {driver_name}")
             except Exception as e:
                 logger.debug(f"Could not verify VIN mapping: {e}")
 
             # Step 3: Get current location from TMS using VIN
+            # Ensure driver_name is never None for display purposes
+            if not driver_name:
+                driver_name = "Unknown Driver"
+            
             logger.info(
                 f"Getting location from TMS for VIN {vin} (driver: {driver_name})...")
-            trucks = self.tms_integration.load_truck_list()
-            truck = self.tms_integration.find_truck_by_vin(trucks, vin)
+            
+            # Robust TMS lookup with retry and fallback mechanisms
+            truck = await self._robust_tms_lookup(vin)
+
+            # Fallback: If VIN not found, try fuzzy VIN matching for similar VINs
+            # But verify the matched VIN belongs to the same driver
+            if not truck:
+                logger.warning(f"VIN {vin} not found in TMS, trying fuzzy VIN matching...")
+                try:
+                    trucks = self.tms_integration.load_truck_list()
+
+                    # Look for VINs with similar patterns (allow up to 2 character differences)
+                    candidates = []
+                    for t in trucks:
+                        t_vin = (t.get('vin', '') or '').strip().upper()
+                        # Must be same length to be a likely typo
+                        if len(t_vin) == len(vin):
+                            differences = sum(c1 != c2 for c1, c2 in zip(vin, t_vin))
+                            if differences <= 2:  # Allow up to 2 character differences
+                                # Check who this VIN belongs to in assets sheet
+                                try:
+                                    vin_owner = self.google_integration.get_driver_name_by_vin(t_vin)
+                                    candidates.append((t, t_vin, differences, vin_owner))
+                                except:
+                                    candidates.append((t, t_vin, differences, None))
+
+                    # Use the closest match if it belongs to the same driver or no owner found
+                    if candidates:
+                        candidates.sort(key=lambda x: x[2])  # Sort by number of differences
+
+                        for candidate in candidates:
+                            best_match, best_vin, diff_count, vin_owner = candidate
+
+                            # Check if this VIN belongs to the same driver
+                            same_driver = (not vin_owner or
+                                         vin_owner.lower() == driver_name.lower())
+
+                            if diff_count <= 2 and same_driver:
+                                logger.info(f"Fuzzy VIN match found: {best_vin} (differs by {diff_count} chars from {vin})")
+                                logger.info(f"Using fuzzy matched VIN for driver: {driver_name}")
+                                truck = best_match
+                                vin = best_vin  # Update to correct VIN
+                                break
+                            elif diff_count <= 2 and vin_owner:
+                                logger.warning(f"Found similar VIN {best_vin} but it belongs to {vin_owner}, not {driver_name}")
+                                # Don't use this match - wrong driver
+                except Exception as e:
+                    logger.debug(f"Error in fuzzy VIN matching: {e}")
 
             if not truck:
-                await update.message.reply_text(
+                # Try to find similar VINs to help identify the issue
+                similar_vins = []
+                try:
+                    trucks = self.tms_integration.load_truck_list()
+                    vin_prefix = vin[:10] if len(vin) >= 10 else vin[:8]  # Get VIN prefix
+
+                    for t in trucks:
+                        t_vin = (t.get('vin', '') or '').strip().upper()
+                        if t_vin.startswith(vin_prefix):
+                            similar_vins.append(t_vin)
+
+                    if not similar_vins and len(vin) >= 10:
+                        # Try with shorter prefix if no matches
+                        vin_prefix = vin[:8]
+                        for t in trucks:
+                            t_vin = (t.get('vin', '') or '').strip().upper()
+                            if t_vin.startswith(vin_prefix):
+                                similar_vins.append(t_vin)
+                except Exception as e:
+                    logger.debug(f"Error finding similar VINs: {e}")
+
+                # Check if any similar VINs belong to other drivers
+                similar_vin_info = []
+                for sim_vin in similar_vins[:3]:
+                    try:
+                        sim_owner = self.google_integration.get_driver_name_by_vin(sim_vin)
+                        similar_vin_info.append((sim_vin, sim_owner))
+                    except:
+                        similar_vin_info.append((sim_vin, None))
+
+                truck_not_found_message = (
                     f"⚠️ **Truck Not Found in TMS**\n\n"
                     f"Driver: **{driver_name}**\n"
-                    f"VIN: **{vin}**\n\n"
-                    f"The VIN was found in our database but the truck is not currently reporting location data.",
-                    parse_mode='Markdown',
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=CB_BACK_TO_MAIN)]])
+                    f"VIN: `{vin}`\n\n"
+                    f"This truck is not currently reporting location data.\n"
                 )
+
+                if similar_vin_info:
+                    truck_not_found_message += f"\n💡 **Possible VIN data issue:**\n"
+                    for sim_vin, sim_owner in similar_vin_info:
+                        if sim_owner and sim_owner != driver_name:
+                            truck_not_found_message += f"• Similar VIN `{sim_vin}` belongs to **{sim_owner}**\n"
+                        else:
+                            truck_not_found_message += f"• Similar VIN `{sim_vin}` found\n"
+                    truck_not_found_message += f"\nThe VIN in assets sheet may need correction."
+                elif similar_vins:
+                    truck_not_found_message += (
+                        f"\n💡 **Similar VINs found:**\n"
+                        f"{chr(10).join(['• `' + v + '`' for v in similar_vins[:3]])}\n\n"
+                        f"The VIN in assets sheet may need correction."
+                    )
+
+                if update.message:
+                    await update.message.reply_text(
+                        truck_not_found_message,
+                        parse_mode='Markdown',
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=CB_BACK_TO_MAIN)]])
+                    )
+                elif update.callback_query:
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text=truck_not_found_message,
+                        parse_mode='Markdown',
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=CB_BACK_TO_MAIN)]])
+                    )
+                else:
+                    logger.error("Unable to send truck not found message - no message or callback_query")
                 return
 
             # Step 3: Update session with combined data
@@ -3237,7 +3587,7 @@ class EnhancedLocationBot(RiskDetectionMixin):
             logger.error(f"Error processing driver name: {e}")
 
             # Handle both message and callback contexts
-            error_message = f"❌ **Error:** {str(e)}"
+            error_message = f"❌ **Error:** {self._escape_markdown(str(e))}"
             error_markup = InlineKeyboardMarkup(
                 [[InlineKeyboardButton("🔙 Back", callback_data=CB_BACK_TO_MAIN)]])
 
@@ -3306,7 +3656,7 @@ class EnhancedLocationBot(RiskDetectionMixin):
         except Exception as e:
             logger.error(f"Error handling driver selection: {e}")
             await query.edit_message_text(
-                f"❌ **Error:** {str(e)}",
+                f"❌ **Error:** {self._escape_markdown(str(e))}",
                 parse_mode='Markdown',
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=CB_BACK_TO_MAIN)]])
             )
@@ -3327,9 +3677,13 @@ class EnhancedLocationBot(RiskDetectionMixin):
             # Get correct driver name from Google Sheets assets data
             sheets_driver = self.google_integration.get_driver_name_by_vin(
                 session.vin) or session.driver_name or 'Unknown'
+            
+            # Ensure sheets_driver is never None
+            if not sheets_driver:
+                sheets_driver = 'Unknown'
 
             # Debug: Check for driver name conflicts
-            tms_driver = truck.get('driver_name', 'Not in TMS')
+            tms_driver = truck.get('driver_name') or 'Not in TMS'
 
             if tms_driver and tms_driver != 'Not in TMS' and tms_driver.lower() != sheets_driver.lower():
                 logger.warning(
@@ -3460,11 +3814,23 @@ class EnhancedLocationBot(RiskDetectionMixin):
                     f"📡 **Updated:** {fallback_updated_time} ET\n\n"
                     f"🗺️ [View on Map]({map_url})\n\n"
                     f"⚠️ Inline buttons unavailable due to error: {str(e)}")
-                await update.message.reply_text(
-                    fallback_message,
-                    parse_mode='Markdown',
-                    disable_web_page_preview=True
-                )
+                
+                # Handle both message and callback query contexts
+                if update.message:
+                    await update.message.reply_text(
+                        fallback_message,
+                        parse_mode='Markdown',
+                        disable_web_page_preview=True
+                    )
+                elif update.callback_query:
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text=fallback_message,
+                        parse_mode='Markdown',
+                        disable_web_page_preview=True
+                    )
+                else:
+                    logger.error("Unable to send fallback location message - no message or callback_query")
             except Exception as fallback_error:
                 logger.error(f"Fallback message also failed: {fallback_error}")
 
@@ -3547,7 +3913,7 @@ class EnhancedLocationBot(RiskDetectionMixin):
         except Exception as e:
             logger.error(f"Error processing VIN: {e}")
             await update.message.reply_text(
-                f"❌ **Error:** {str(e)}",
+                f"❌ **Error:** {self._escape_markdown(str(e))}",
                 parse_mode='Markdown',
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=CB_BACK_TO_MAIN)]])
             )
@@ -3588,7 +3954,7 @@ class EnhancedLocationBot(RiskDetectionMixin):
         except Exception as e:
             logger.error(f"Error processing stop location: {e}")
             await update.message.reply_text(
-                f"❌ **Error:** {str(e)}",
+                f"❌ **Error:** {self._escape_markdown(str(e))}",
                 parse_mode='Markdown',
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=CB_BACK_TO_MAIN)]])
             )
@@ -3605,16 +3971,47 @@ class EnhancedLocationBot(RiskDetectionMixin):
         try:
             # Validate time format
             from datetime import datetime as dt
+            
+            # Ensure appointment is not None or empty
+            if not appointment or not str(appointment).strip():
+                await update.message.reply_text(
+                    "❌ **Error:** No appointment time provided.",
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=CB_BACK_TO_MAIN)]])
+                )
+                return
 
-            # Try different time formats
-            time_formats = ["%I:%M %p", "%H:%M", "%I:%M%p"]
+            # Safely convert to string and clean
+            appointment_str = str(appointment).strip()
+            if not appointment_str:
+                await update.message.reply_text(
+                    "❌ **Error:** Empty appointment time provided.",
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=CB_BACK_TO_MAIN)]])
+                )
+                return
+
+            # Try different time and datetime formats
+            time_formats = [
+                # Date-time formats first
+                "%Y-%m-%d %H:%M",      # 2025-09-26 08:00
+                "%Y-%m-%d %I:%M %p",   # 2025-09-26 8:00 AM
+                "%m/%d/%Y %H:%M",      # 09/26/2025 08:00
+                "%m/%d/%Y %I:%M %p",   # 09/26/2025 8:00 AM
+                "%m-%d-%Y %H:%M",      # 09-26-2025 08:00
+                "%m-%d-%Y %I:%M %p",   # 09-26-2025 8:00 AM
+                # Time-only formats
+                "%I:%M %p",            # 2:30 PM
+                "%H:%M",               # 14:45
+                "%I:%M%p"              # 2:30PM
+            ]
             parsed_time = None
 
             for fmt in time_formats:
                 try:
-                    parsed_time = dt.strptime(appointment.upper(), fmt)
+                    parsed_time = dt.strptime(appointment_str.upper(), fmt)
                     break
-                except ValueError:
+                except (ValueError, AttributeError):
                     continue
 
             if not parsed_time:
@@ -3622,6 +4019,11 @@ class EnhancedLocationBot(RiskDetectionMixin):
                     f"⚠️ **Invalid Time Format**\n\n"
                     f"Could not parse: {appointment}\n\n"
                     f"**Try these formats:**\n"
+                    f"**Date & Time:**\n"
+                    f"• 2025-09-26 08:00\n"
+                    f"• 2025-09-26 8:00 AM\n"
+                    f"• 09/26/2025 2:30 PM\n"
+                    f"**Time Only:**\n"
                     f"• 2:30 PM\n"
                     f"• 08:15 AM\n"
                     f"• 14:45",
@@ -3630,13 +4032,28 @@ class EnhancedLocationBot(RiskDetectionMixin):
                 )
                 return
 
-            # Save appointment (always store in consistent format)
-            formatted_time = parsed_time.strftime("%I:%M %p")
-            session.appointment = formatted_time
+            # Save appointment - if date not provided, assume today
+            from datetime import datetime
+            
+            # Check if user provided date or just time
+            has_date = any(char in appointment_str for char in ['-', '/'])
+            
+            if has_date:
+                # User provided full datetime - store as ISO format for ETA calculations
+                full_datetime = parsed_time
+                session.appointment = full_datetime.strftime("%Y-%m-%d %I:%M %p")
+                display_time = full_datetime.strftime("%m/%d/%Y %I:%M %p")
+            else:
+                # User provided time only - combine with today's date
+                today = datetime.now().date()
+                full_datetime = datetime.combine(today, parsed_time.time())
+                session.appointment = full_datetime.strftime("%Y-%m-%d %I:%M %p")
+                display_time = parsed_time.strftime("%I:%M %p")
+            
             session.current_state = None
 
             await update.message.reply_text(
-                f"✅ **Appointment Time Set**\n\n⏰ **Time:** {formatted_time} EDT\n\n💡 Calculate ETA to compare with appointment!",
+                f"✅ **Appointment Time Set**\n\n⏰ **Time:** {display_time} EDT\n\n💡 Calculate ETA to compare with appointment!",
                 parse_mode='Markdown',
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("↪️ Calculate ETA", callback_data=CB_CALCULATE_ETA)],
@@ -3647,7 +4064,7 @@ class EnhancedLocationBot(RiskDetectionMixin):
         except Exception as e:
             logger.error(f"Error processing appointment: {e}")
             await update.message.reply_text(
-                f"❌ **Error:** {str(e)}",
+                f"❌ **Error:** {self._escape_markdown(str(e))}",
                 parse_mode='Markdown',
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=CB_BACK_TO_MAIN)]])
             )

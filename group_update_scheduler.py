@@ -94,7 +94,8 @@ class GroupUpdateScheduler:
             self._hourly_group_updates_job,
             interval=self.config.GROUP_LOCATION_INTERVAL,
             first=hourly_jitter,
-            name="hourly_group_updates"
+            name="hourly_group_updates",
+            job_kwargs={'misfire_grace_time': 600}  # Allow 10 min grace for delayed execution
         )
 
         # Schedule 5-minute silent refresh with different jitter
@@ -106,7 +107,8 @@ class GroupUpdateScheduler:
             self._silent_refresh_job,
             interval=300,  # 5 minutes
             first=refresh_jitter,
-            name="silent_refresh"
+            name="silent_refresh",
+            job_kwargs={'misfire_grace_time': 120}  # Allow 2 min grace for delayed execution
         )
 
         # Schedule housekeeping tasks
@@ -114,7 +116,17 @@ class GroupUpdateScheduler:
             self._housekeeping_job,
             interval=1800,  # 30 minutes
             first=300,  # 5 minutes
-            name="housekeeping"
+            name="housekeeping",
+            job_kwargs={'misfire_grace_time': 300}  # Allow 5 min grace for delayed execution
+        )
+
+        # Schedule group title monitoring (check for title changes and update VINs)
+        job_queue.run_repeating(
+            self._group_title_monitor_job,
+            interval=3600,  # Every hour
+            first=600,  # Start after 10 minutes
+            name="group_title_monitor",
+            job_kwargs={'misfire_grace_time': 600}  # Allow 10 min grace for delayed execution
         )
 
         logger.info("Group update scheduler started successfully")
@@ -169,25 +181,35 @@ class GroupUpdateScheduler:
 
             # Process each group with jitter and rate limiting
             updates_sent = 0
+            updates_attempted = 0
+            updates_skipped = 0
+            
             for group_data in active_groups:
+                updates_attempted += 1
                 try:
-                    await self._send_group_update(group_data, fleet_map)
-                    updates_sent += 1
+                    send_result = await self._send_group_update(group_data, fleet_map)
+                    if send_result:  # Only count if actually sent
+                        updates_sent += 1
+                    else:
+                        updates_skipped += 1
 
                     # Add jitter between group updates
                     jitter = random.uniform(0.5, 2.0)
                     await asyncio.sleep(jitter)
 
                 except Exception as e:
+                    updates_skipped += 1
                     logger.error(
                         f"Error updating group {group_data.get('group_id')}: {e}")
                     self._record_failure()
+            
+            logger.info(f"Update summary: {updates_sent} sent, {updates_skipped} skipped, {updates_attempted} attempted")
 
             self.metrics['hourly_updates_sent'] += updates_sent
             duration = time.time() - start_time
 
             logger.info(
-                f"Hourly updates complete: {updates_sent} sent in {duration:.1f}s")
+                f"Hourly updates complete: {updates_sent} sent, {updates_skipped} skipped, {updates_attempted} attempted in {duration:.1f}s")
             self.last_runs['hourly_updates'] = datetime.utcnow()
 
         except Exception as e:
@@ -250,26 +272,59 @@ class GroupUpdateScheduler:
             return 0
 
     async def _send_group_update(
-            self, group_data: Dict, fleet_map: Dict[str, FleetPoint]):
-        """Send location update to a specific group with deduplication"""
+            self, group_data: Dict, fleet_map: Dict[str, FleetPoint]) -> bool:
+        """Send location update to a specific group with deduplication
+        
+        Returns:
+            True if message was successfully sent
+            False if skipped or failed
+        """
         group_id = group_data.get('group_id')
-        vin = group_data.get('vin', '').upper()
+        vin = (group_data.get('vin', '') or '').upper()
+        group_name = group_data.get('group_name', 'Unknown')
 
         if not group_id or not vin:
-            return
+            logger.debug(f"Missing group_id ({group_id}) or VIN ({vin}) for group {group_name}")
+            return False
 
         # Check outbox for deduplication
         time_bucket = int(time.time() // 3600)  # Hour buckets
         outbox_key = f"{group_id}|{vin}|{time_bucket}"
 
-        if outbox_key in self.outbox:
-            logger.debug(f"Update already sent to group {group_id} this hour")
-            return
+        # TEMPORARY: Allow forcing updates by checking env var
+        force_updates = getattr(self.config, 'FORCE_ALL_GROUP_UPDATES', False)
+
+        if not force_updates and outbox_key in self.outbox:
+            logger.debug(f"Update already sent to group {group_name} ({group_id}) this hour")
+            return False
 
         fleet_point = fleet_map.get(vin)
         if not fleet_point:
-            logger.debug(f"No fleet data for VIN {vin} in group {group_id}")
-            return
+            # TEMPORARY: Send offline message instead of skipping
+            send_offline_updates = getattr(self.config, 'SEND_OFFLINE_TRUCK_UPDATES', True)
+            if send_offline_updates:
+                logger.info(f"📴 Sending offline status for VIN {vin} in group {group_name} ({group_id})")
+                message = f"🚛 <b>Truck Status Update</b>\n\n📴 <b>VIN:</b> {vin}\n⚠️ <b>Status:</b> Offline/Not Reporting\n🕐 <b>Last Update:</b> Truck not currently transmitting location data"
+
+                try:
+                    async with self.telegram_semaphore:
+                        await self.bot.send_message(
+                            chat_id=group_id,
+                            text=message,
+                            parse_mode='HTML',
+                            disable_web_page_preview=True
+                        )
+
+                    # Record in outbox
+                    self.outbox[outbox_key] = datetime.utcnow()
+                    logger.info(f"✅ Offline status sent to group {group_name} ({group_id}) for VIN {vin}")
+                    return True
+                except Exception as e:
+                    logger.error(f"Failed to send offline message to group {group_name}: {e}")
+                    return False
+            else:
+                logger.warning(f"No fleet data for VIN {vin} in group {group_name} ({group_id}) - truck not reporting?")
+                return False
 
         try:
             # Build HTML-formatted message
@@ -286,27 +341,30 @@ class GroupUpdateScheduler:
 
             # Record in outbox
             self.outbox[outbox_key] = datetime.utcnow()
-            logger.debug(
-                f"Location update sent to group {group_id} for VIN {vin}")
+            logger.info(
+                f"✅ Location update sent to group {group_name} ({group_id}) for VIN {vin}")
+            return True  # Successfully sent
 
         except Forbidden:
-            logger.warning(f"Bot was removed from group {group_id}")
+            logger.warning(f"❌ Bot was removed from group {group_name} ({group_id})")
             # Mark group as inactive
             await self._deactivate_group(group_id, "Bot removed from group")
+            return False  # Failed to send
 
         except BadRequest as e:
             if "429" in str(e) or "rate limit" in str(e).lower():
                 self.metrics['telegram_429s'] += 1
-                logger.warning(f"Rate limited sending to group {group_id}")
+                logger.warning(f"⏳ Rate limited sending to group {group_name} ({group_id})")
                 # Don't mark as sent - will retry next cycle
                 raise
             else:
-                logger.error(f"Bad request sending to group {group_id}: {e}")
+                logger.error(f"❌ Bad request sending to group {group_name} ({group_id}): {e}")
+                return False  # Failed to send
 
         except TelegramError as e:
-            logger.error(f"Telegram error sending to group {group_id}: {e}")
+            logger.error(f"❌ Telegram error sending to group {group_name} ({group_id}): {e}")
             self._record_failure()
-            raise
+            return False  # Failed to send
 
     def _build_location_message(self, fleet_point: FleetPoint) -> str:
         """Build HTML-formatted message using centralized renderer"""
@@ -314,7 +372,7 @@ class GroupUpdateScheduler:
         if not getattr(self.config, 'ENABLE_NEW_LOCATION_RENDERER', True):
             return self._build_legacy_location_message(fleet_point)
 
-        from location_renderer import render_location_update
+        from location_renderer import render_location_update, is_latlon_like, _get_cached_address, _format_coordinates
 
         # Look up driver name from assets sheet if not provided by TMS
         driver_name = fleet_point.driver_name
@@ -326,6 +384,30 @@ class GroupUpdateScheduler:
                 logger.debug(
                     f"Could not lookup driver name for {fleet_point.vin}: {e}")
 
+        # Ensure we have a readable location - geocode on-demand if needed
+        location_str = fleet_point.location_str
+        if (not location_str or is_latlon_like(location_str)) and fleet_point.lat and fleet_point.lon:
+            # Check cache first
+            lat_str, lon_str = _format_coordinates(fleet_point.lat, fleet_point.lon, 5)
+            cache_key = f"{lat_str},{lon_str}"
+            cached_addr = _get_cached_address(cache_key, 86400)
+
+            if not cached_addr:
+                # Not cached - do synchronous geocoding (this will use Google Maps fallback)
+                try:
+                    import asyncio
+                    from reverse_geocode_service import ReverseGeocodeService
+
+                    async def geocode():
+                        async with ReverseGeocodeService(self.config) as geocode_service:
+                            return await geocode_service.reverse_geocode_hybrid(fleet_point.lat, fleet_point.lon)
+
+                    location_str = asyncio.run(geocode())
+                    logger.debug(f"On-demand geocoded {cache_key} -> {location_str}")
+                except Exception as e:
+                    logger.warning(f"On-demand geocoding failed: {e}")
+                    # Keep the original location_str
+
         return render_location_update(
             driver=driver_name or "Unknown Driver",
             status=fleet_point.status or "Unknown",
@@ -333,8 +415,9 @@ class GroupUpdateScheduler:
             lon=fleet_point.lon or 0.0,
             speed_mph=fleet_point.speed_mph(),
             updated_at_utc=fleet_point.updated_at_utc,
-            location_str=fleet_point.location_str,
-            map_source=fleet_point.source
+            location_str=location_str,
+            map_source=fleet_point.source,
+            idle_since_utc=fleet_point.idle_since_utc
         )
 
     def _build_legacy_location_message(self, fleet_point: FleetPoint) -> str:
@@ -484,6 +567,24 @@ class GroupUpdateScheduler:
                     'range': f'F{row_num}:K{row_num}',
                     'values': [row_data]
                 })
+
+                # Update speed in column M
+                batch_updates.append({
+                    'range': f'M{row_num}',
+                    'values': [[str(fleet_point.speed_mph())]]
+                })
+
+                # Update idle_since in column P
+                idle_since_str = ""
+                if fleet_point.idle_since_utc:
+                    # Format timestamp for sheet
+                    idle_since_str = fleet_point.idle_since_utc.strftime('%Y-%m-%d %H:%M:%S UTC')
+
+                batch_updates.append({
+                    'range': f'P{row_num}',
+                    'values': [[idle_since_str]]
+                })
+
                 updated_count += 1
 
             # Execute batch update
@@ -521,18 +622,31 @@ class GroupUpdateScheduler:
         """Get active groups with registered VINs from Google Sheets"""
         try:
             records = self.google._get_groups_records_safe()
+            logger.debug(f"GroupUpdateScheduler: Found {len(records)} total groups in database")
             active_groups = []
 
             for record in records:
-                if (record.get('status', '').upper() == 'ACTIVE' and
-                    record.get('vin') and
-                        record.get('group_id')):
+                group_id = record.get('group_id', 0)
+                vin = record.get('vin', '').strip()
+                status = (record.get('status', '') or '').strip()
+                group_title = record.get('group_title', '')
+                
+                # Determine if group is active: explicit "ACTIVE" or timestamp pattern (YYYY-MM-DD)
+                is_active = (status.upper() == 'ACTIVE' or 
+                            (len(status) >= 10 and status[4] == '-' and status[7] == '-' and 
+                             status[:4].isdigit() and status[5:7].isdigit() and status[8:10].isdigit()))
+                
+                logger.debug(f"GroupUpdateScheduler: Processing group {group_id}: status='{status}' -> active={is_active}, vin='{vin[:10] if vin else 'None'}...', title='{group_title}'")
+                
+                if (is_active and vin and group_id):
                     active_groups.append({
                         'group_id': int(record['group_id']),
                         'vin': record['vin'].strip().upper(),
                         'group_title': record.get('group_title', '')
                     })
+                    logger.debug(f"GroupUpdateScheduler: Added active group {group_id}")
 
+            logger.info(f"GroupUpdateScheduler: Found {len(active_groups)} active groups out of {len(records)} total")
             return active_groups
 
         except Exception as e:
@@ -599,6 +713,24 @@ class GroupUpdateScheduler:
 
         except Exception as e:
             logger.error(f"Housekeeping job failed: {e}")
+
+    async def _group_title_monitor_job(self, context):
+        """Monitor group titles for changes and update VIN mappings"""
+        try:
+            from group_title_monitor import check_and_update_group_title_changes
+
+            logger.info("Starting group title monitoring...")
+            stats = await check_and_update_group_title_changes(self.google, self.bot)
+
+            if stats['updated'] > 0:
+                logger.info(f"✓ Group title monitor: {stats['updated']} VIN mappings updated")
+            elif stats['changed'] > 0:
+                logger.info(f"Group title monitor: {stats['changed']} titles changed, {stats['errors']} errors")
+            else:
+                logger.debug(f"Group title monitor: No changes detected ({stats['checked']} groups checked)")
+
+        except Exception as e:
+            logger.error(f"Group title monitor job failed: {e}", exc_info=True)
 
     def get_scheduler_stats(self) -> Dict:
         """Get scheduler performance statistics"""
