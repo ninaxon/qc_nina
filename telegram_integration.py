@@ -1068,6 +1068,9 @@ class EnhancedLocationBot(RiskDetectionMixin):
             if data_age_warning:
                 message += f"⚠️ {data_age_warning}\n"
 
+            # Generate map URL from coordinates
+            map_url = f"https://maps.google.com/?q={session.lat},{session.lng}"
+
             message += (
                 f"\n🗺️ [View Current Location]({map_url})\n"
                 f"🔄 **Next update in** 1 hour"
@@ -3803,6 +3806,9 @@ class EnhancedLocationBot(RiskDetectionMixin):
                 # Use NY timezone for updated time
                 fallback_updated_time = updated_time_edt.strftime(
                     '%I:%M %p') if 'updated_time_edt' in locals() else session.last_updated.strftime('%I:%M %p')
+
+                # Generate map URL from coordinates
+                map_url = f"https://maps.google.com/?q={session.lat},{session.lng}"
 
                 fallback_message = (
                     f"📍 **Driver Location**\n\n"
