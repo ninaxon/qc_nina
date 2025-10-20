@@ -1006,15 +1006,16 @@ class EnhancedLocationBot(RiskDetectionMixin):
 
                         if route:
                             # Add delivery information
-                            message += f"📦 **Delivery Address:** {session.stop_address}\n\n"
+                            import html
+                            message += f"📦 <b>Delivery Address:</b> {html.escape(session.stop_address)}\n\n"
 
                             # Add route information with EDT timezone
                             eta_time_edt = now_edt + route['duration']
-                            message += (f"🛣️ **Route Information:**\n"
+                            message += (f"🛣️ <b>Route Information:</b>\n"
                                         f"• Distance: {route['distance_miles']} miles\n"
                                         f"• Duration: {route['duration']}\n"
                                         f"• ETA: {eta_time_edt.strftime('%I:%M %p')} EDT\n"
-                                        f"• Appointment: {session.appointment or '—'}\n\n")
+                                        f"• Appointment: {html.escape(session.appointment or '—')}\n\n")
 
                             # Determine status based on appointment with EDT
                             # timezone
@@ -1047,33 +1048,33 @@ class EnhancedLocationBot(RiskDetectionMixin):
                                         f"Error parsing appointment time in group update: {e}")
                                     pass
 
-                            message += f"{status_emoji} **Status:** {status_text}\n"
+                            message += f"{status_emoji} <b>Status:</b> {html.escape(status_text)}\n"
                         else:
                             # Route calculation failed, but we have stop
                             # address
-                            message += f"📦 **Delivery Address:** {session.stop_address}\n\n"
+                            message += f"📦 <b>Delivery Address:</b> {html.escape(session.stop_address)}\n\n"
                 except Exception as e:
                     # Geocoding or route calculation failed
                     logger.error(
                         f"Route calculation failed in group update: {e}")
-                    message += f"📦 **Delivery Address:** {session.stop_address}\n\n"
+                    message += f"📦 <b>Delivery Address:</b> {html.escape(session.stop_address)}\n\n"
 
             # Add timestamp and next update info with EDT timezone
             message += (
-                f"📡 **Last Updated:** {now_edt.strftime('%I:%M:%S %p')} EDT\n"
+                f"📡 <b>Last Updated:</b> {now_edt.strftime('%I:%M:%S %p')} EDT\n"
             )
 
             # Add data freshness warning if TMS data is stale
             data_age_warning = self._get_data_age_warning(truck)
             if data_age_warning:
-                message += f"⚠️ {data_age_warning}\n"
+                message += f"⚠️ {html.escape(data_age_warning)}\n"
 
             # Generate map URL from coordinates
             map_url = f"https://maps.google.com/?q={session.lat},{session.lng}"
 
             message += (
-                f"\n🗺️ [View Current Location]({map_url})\n"
-                f"🔄 **Next update in** 1 hour"
+                f"\n🗺️ <a href='{map_url}'>View Current Location</a>\n"
+                f"🔄 <b>Next update in</b> 1 hour"
             )
 
             # Persistent ETA calculation buttons
@@ -1103,7 +1104,7 @@ class EnhancedLocationBot(RiskDetectionMixin):
             await context.bot.send_message(
                 chat_id=chat_id,
                 text=message,
-                parse_mode='Markdown',
+                parse_mode='HTML',
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 disable_web_page_preview=True
             )
